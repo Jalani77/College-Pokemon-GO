@@ -5,7 +5,7 @@ export default defineConfig({
   fullyParallel: true,
   reporter: "list",
   use: {
-    baseURL: "http://127.0.0.1:3000",
+    baseURL: "http://127.0.0.1:3003",
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
@@ -16,8 +16,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "npm run dev",
-    url: "http://127.0.0.1:3000",
+    command: "npm run dev -- --port 3003",
+    url: "http://127.0.0.1:3003",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },

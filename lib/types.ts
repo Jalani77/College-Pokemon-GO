@@ -8,6 +8,8 @@ export type DiscoveryCard = {
   rarity: Rarity;
   xp: number;
   source: "ai" | "verified-quest" | "local-demo";
+  artworkData?: string;
+  artworkKind?: "xai-edited" | "category-illustration";
   uncertaintyNote?: string;
   discoveredAt: string;
   questId?: string;
@@ -42,6 +44,7 @@ export type Recognition = {
   objectName: string;
   category: string;
   shortFact: string;
+  subjectType: "object" | "person" | "scene";
   uncertain: boolean;
   uncertaintyNote: string;
 };
@@ -50,4 +53,10 @@ export type FieldSuggestion = {
   name: string;
   clue: string;
   category: string;
+};
+
+export type SurroundingsTarget = {
+  name: string;
+  category: string;
+  observation: string;
 };

@@ -17,6 +17,7 @@ type MockOptions = {
   aiConfigured?: boolean;
   recognitionFailureCount?: number;
   saveFailure?: boolean;
+  artFailure?: boolean;
   uncertain?: boolean;
   wantedBy?: string[];
   suggestions?: { name: string; clue: string; category: string }[];
@@ -39,6 +40,7 @@ async function mockServices(page: Page, options: MockOptions = {}) {
   const saved = new Map<string, typeof appleCard>();
   const tickets = new Map<string, typeof appleCard>();
   const ticket = "signed-test-recognition-proof";
+  const artworkData = `data:image/png;base64,${png.toString("base64")}`;
   let recognitionCalls = 0;
   let profile = { displayName: "", visibilityOptIn: false };
   const lookingFor: string[] = [];
@@ -48,15 +50,25 @@ async function mockServices(page: Page, options: MockOptions = {}) {
   await page.route(/\/api\/deck(?:\?.*)?$/, async (route: Route) => {
     if (route.request().method() === "GET") return route.fulfill({ json: { cards: Array.from(saved.values()), storage: "mongodb" } });
     if (options.saveFailure) return route.fulfill({ status: 503, json: { error: "MongoDB could not be reached. This card was not saved." } });
-    const body = route.request().postDataJSON() as { ticket: string; guestId: string };
+    const body = route.request().postDataJSON() as { ticket: string; guestId: string; artTicket?: string };
     const card = tickets.get(body.ticket);
     if (!card || body.guestId !== guestId) return route.fulfill({ status: 403, json: { error: "Invalid recognition proof." } });
     const alreadySaved = saved.has(card.id);
-    saved.set(card.id, card);
-    return route.fulfill({ json: { card, storage: "mongodb", alreadySaved } });
+    const artPayload = body.artTicket ? JSON.parse(Buffer.from(body.artTicket.split(".")[0], "base64url").toString("utf8")) as { artworkData?: string } : null;
+    const savedCard = artPayload?.artworkData ? { ...card, artworkData: artPayload.artworkData, artworkKind: "xai-edited" as const } : card;
+    saved.set(savedCard.id, savedCard);
+    return route.fulfill({ json: { card: savedCard, storage: "mongodb", alreadySaved } });
   });
   await page.route("**/api/locations", (route) => route.fulfill({ json: { locations: [], storage: "mongodb" } }));
   await page.route("**/api/events", (route) => route.fulfill({ json: { events: [], storage: "mongodb" } }));
+  await page.route("**/api/scan-surroundings", (route) => route.fulfill({ json: {
+    targets: [
+      { name: "Red apple", category: "Fruit", observation: "A round red fruit near the center." },
+      { name: "Ceramic mug", category: "Object", observation: "A small handled cup beside the fruit." },
+    ],
+    localization: "none",
+    source: "xai-selected-still",
+  } }));
   await page.route("**/api/wishlist**", async (route) => {
     if (route.request().method() === "GET") {
       const url = new URL(route.request().url());
@@ -66,7 +78,7 @@ async function mockServices(page: Page, options: MockOptions = {}) {
         displayName: profile.displayName,
         visibilityOptIn: profile.visibilityOptIn,
         matches: [],
-        wantedBy: cardName?.toLowerCase() === appleCard.name.toLowerCase() ? (options.wantedBy || []) : [],
+        wantedBy: cardName?.toLowerCase() === appleCard.name.toLowerCase() ? (options.wantedBy || []).map((displayName) => ({ displayName, matchType: "card" })) : [],
         storage: "mongodb",
       } });
     }
@@ -77,6 +89,13 @@ async function mockServices(page: Page, options: MockOptions = {}) {
     return route.fulfill({ json: { saved: true, storage: "mongodb" } });
   });
   await page.route("**/api/field-scan", (route) => route.fulfill({ json: { suggestions: options.suggestions || [{ name: "Look for a tree", category: "Nature", clue: "Notice the shape of leaves in view." }], source: "ai-suggestions" } }));
+  await page.route("**/api/cards/art", async (route) => {
+    if (options.artFailure) return route.fulfill({ status: 502, json: { error: "xAI could not make card art. Use category art or retry once." } });
+    const body = route.request().postDataJSON() as { consent: boolean };
+    if (body.consent !== true) return route.fulfill({ status: 400, json: { error: "Explicit consent is required." } });
+    const artTicket = `${Buffer.from(JSON.stringify({ guestId, cardId: appleCard.id, artworkData, issuedAt: Date.now() })).toString("base64url")}.test-signature`;
+    return route.fulfill({ json: { artTicket, artworkKind: "xai-edited" } });
+  });
   await page.route("**/api/recognize", async (route) => {
     recognitionCalls += 1;
     if (options.aiConfigured === false) return route.fulfill({ status: 503, json: { error: "AI not configured. Add XAI_API_KEY to .env.local." } });
@@ -85,7 +104,7 @@ async function mockServices(page: Page, options: MockOptions = {}) {
     if (body.guestId !== guestId || !body.imageData.startsWith("data:image/jpeg;base64,")) return route.fulfill({ status: 400, json: { error: "Invalid still image request." } });
     const card = options.uncertain ? { ...appleCard, id: "95cfc08e-92b8-483b-b3e1-d1437338721f", name: "Unidentified object", shortFact: "A small shape is visible, but the image is not clear enough to name it.", uncertaintyNote: "The still frame does not show enough detail." , xp: 5 } : appleCard;
     tickets.set(ticket, card);
-    return route.fulfill({ json: { card, ticket, recognition: { uncertain: Boolean(options.uncertain), missionMatch: false } } });
+    return route.fulfill({ json: { card, ticket, recognition: { uncertain: Boolean(options.uncertain), subjectType: "object", missionMatch: false } } });
   });
 
   return { saved, ticket };
@@ -95,6 +114,12 @@ async function uploadPhoto(page: Page) {
   await page.locator('input[type="file"]').setInputFiles({ name: "test.png", mimeType: "image/png", buffer: png });
 }
 
+async function unlockWithCategoryArt(page: Page) {
+  await page.getByRole("button", { name: "Unlock with category art" }).click();
+  const skip = page.getByRole("button", { name: "Skip animation" });
+  if (await skip.isVisible().catch(() => false)) await skip.click();
+}
+
 test("free scan saves an arbitrary common card despite mission mismatch and stays idempotent after refresh", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 667 });
   await denyCamera(page);
@@ -102,9 +127,9 @@ test("free scan saves an arbitrary common card despite mission mismatch and stay
   await page.goto("/");
   await expect(page.getByText(/Camera permission was denied/)).toBeVisible();
   await uploadPhoto(page);
+  await unlockWithCategoryArt(page);
   await expect(page.getByRole("heading", { name: "Red apple" })).toBeVisible();
   await expect(page.getByText("common", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Skip animation" }).click();
   await page.getByRole("button", { name: "Add to deck" }).click();
   await expect(page.getByText("SAVED DISCOVERY")).toBeVisible();
   await expect(page.getByText(/No opted-in explorers/)).toBeVisible();
@@ -129,7 +154,7 @@ test("failed xAI recognition is truthful and can be retried", async ({ page }) =
   await uploadPhoto(page);
   await expect(page.getByText(/Recognition did not complete/)).toBeVisible();
   await uploadPhoto(page);
-  await expect(page.getByRole("heading", { name: "Red apple" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Unlock with category art" })).toBeVisible();
 });
 
 test("uncertain identification is not overclaimed and offers a retake", async ({ page }) => {
@@ -137,8 +162,7 @@ test("uncertain identification is not overclaimed and offers a retake", async ({
   await mockServices(page, { uncertain: true });
   await page.goto("/");
   await uploadPhoto(page);
-  await expect(page.getByRole("heading", { name: "Unidentified object" })).toBeVisible();
-  await expect(page.getByText(/Identification uncertain/)).toBeVisible();
+  await expect(page.getByText("This image is uncertain")).toBeVisible();
   await page.getByRole("button", { name: /Try another photo/ }).click();
   await expect(page.getByText(/Camera permission was denied/)).toBeVisible();
 });
@@ -148,8 +172,8 @@ test("MongoDB save failure never displays a saved state", async ({ page }) => {
   await mockServices(page, { saveFailure: true });
   await page.goto("/");
   await uploadPhoto(page);
+  await unlockWithCategoryArt(page);
   await expect(page.getByRole("heading", { name: "Red apple" })).toBeVisible();
-  await page.getByRole("button", { name: "Skip animation" }).click();
   await page.getByRole("button", { name: "Add to deck" }).click();
   await expect(page.getByText(/MongoDB could not be reached/)).toBeVisible();
   await expect(page.getByText("AI-GENERATED IDENTIFICATION")).toBeVisible();
@@ -180,16 +204,49 @@ test("Field Scan suggestions come from a selected frame and are not pins", async
   await expect(page.locator(".leaflet-marker-icon")).toHaveCount(0);
 });
 
+test("surroundings scan returns several honest frame labels without invented positions", async ({ page }) => {
+  await denyCamera(page);
+  await mockServices(page);
+  await page.goto("/");
+  const result = await page.evaluate(async (imageData) => {
+    const response = await fetch("/api/scan-surroundings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ imageData }) });
+    return { status: response.status, body: await response.json() };
+  }, `data:image/png;base64,${png.toString("base64")}`);
+  expect(result.status).toBe(200);
+  expect(result.body.targets).toHaveLength(2);
+  expect(result.body.localization).toBe("none");
+  expect(result.body.targets.every((target: Record<string, unknown>) => !("x" in target) && !("y" in target) && !("coordinates" in target))).toBe(true);
+});
+
 test("a saved card shows opted-in wishlist display names", async ({ page }) => {
   await denyCamera(page);
   await mockServices(page, { wantedBy: ["Rowan"] });
   await page.goto("/");
   await uploadPhoto(page);
+  await unlockWithCategoryArt(page);
   await expect(page.getByRole("heading", { name: "Red apple" })).toBeVisible();
-  await page.getByRole("button", { name: "Skip animation" }).click();
   await page.getByRole("button", { name: "Add to deck" }).click();
   await expect(page.getByText("WHO WANTS THIS?")).toBeVisible();
-  await expect(page.getByText("Rowan", { exact: true })).toBeVisible();
+  await expect(page.getByText("Rowan · wants this card", { exact: true })).toBeVisible();
+});
+
+test("consented card art is attached to the saved card and remains after refresh", async ({ page }) => {
+  await denyCamera(page);
+  await mockServices(page);
+  await page.goto("/");
+  await uploadPhoto(page);
+  await page.locator(".art-consent input").check();
+  await page.getByRole("button", { name: "Create card art & unlock" }).click();
+  await expect(page.locator(".reveal-art-photo")).toBeVisible();
+  const skip = page.getByRole("button", { name: "Skip animation" });
+  if (await skip.isVisible().catch(() => false)) await skip.click();
+  await page.getByRole("button", { name: "Add to deck" }).click();
+  await expect(page.getByText("SAVED DISCOVERY")).toBeVisible();
+  await page.getByRole("button", { name: "Deck", exact: true }).click();
+  await expect(page.getByRole("img", { name: "Anime-inspired Red apple card artwork" })).toBeVisible();
+  await page.reload();
+  await page.getByRole("button", { name: "Deck", exact: true }).click();
+  await expect(page.getByRole("img", { name: "Anime-inspired Red apple card artwork" })).toBeVisible();
 });
 
 test("reduced-motion preference skips the reveal animation", async ({ page }) => {
@@ -198,6 +255,7 @@ test("reduced-motion preference skips the reveal animation", async ({ page }) =>
   await mockServices(page);
   await page.goto("/");
   await uploadPhoto(page);
+  await unlockWithCategoryArt(page);
   await expect(page.getByRole("heading", { name: "Red apple" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Skip animation" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Add to deck" })).toBeEnabled();

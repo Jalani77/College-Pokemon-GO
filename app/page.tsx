@@ -1,13 +1,14 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Image from "next/image";
 import {
-  Aperture, ArrowUpRight, Check, ChevronRight, Clock3, Compass, Heart,
-  Leaf, LoaderCircle, LocateFixed, Map as MapIcon, Plus, RefreshCw, Sparkles,
-  Sunrise, Upload, Users, X, Zap,
+  Aperture, ArrowUpRight, Bird, Building2, Check, ChevronRight, Clock3, Compass, Crosshair, Heart,
+  Leaf, LoaderCircle, LocateFixed, Map as MapIcon, Package, Palette, Plus, RefreshCw, Signpost, Sparkles,
+  ScanLine, Sunrise, Upload, Users, X, Zap,
 } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import type { DiscoveryCard, FieldSuggestion, GroupEvent, LocationQuest } from "@/lib/types";
+import type { DiscoveryCard, FieldSuggestion, GroupEvent, LocationQuest, SurroundingsTarget } from "@/lib/types";
 
 const CampusMap = dynamic(() => import("@/components/CampusMap"), {
   ssr: false,
@@ -18,15 +19,26 @@ type AppTab = "explore" | "map" | "deck" | "community";
 type StorageMode = "loading" | "mongodb" | "local-demo" | "unavailable";
 type OwnedCard = DiscoveryCard & { wishlist?: boolean };
 type AppEvent = GroupEvent & { demo?: boolean };
-type Reveal = { card: OwnedCard; ticket?: string; alreadySaved?: boolean };
-type RevealStage = "scanning" | "identified" | "materialized" | "reward" | "ready";
+type Reveal = {
+  card: OwnedCard;
+  ticket?: string;
+  artTicket?: string;
+  sourceImage?: string;
+  subjectType?: "object" | "person" | "scene";
+  artError?: string;
+  artAttempted?: boolean;
+  artConsent?: boolean;
+  unlocked?: boolean;
+  alreadySaved?: boolean;
+};
+type RevealStage = "locked" | "scanning" | "identified" | "materialized" | "reward" | "ready";
 type Toast = { message: string; tone?: "error" | "success" };
 
 const NAV_ITEMS: { id: AppTab; label: string; Icon: typeof Compass }[] = [
   { id: "explore", label: "Explore", Icon: Aperture },
   { id: "map", label: "Map", Icon: MapIcon },
   { id: "deck", label: "Deck", Icon: Leaf },
-  { id: "community", label: "Community", Icon: Users },
+  { id: "community", label: "People", Icon: Users },
 ];
 
 const LOCAL_KEYS = {
@@ -56,13 +68,23 @@ async function jsonOrError<T>(response: Response): Promise<T & { error?: string 
   return data as T & { error?: string };
 }
 
+function artworkFromTicket(token: string) {
+  const payload = token.split(".")[0]?.replace(/-/g, "+").replace(/_/g, "/");
+  if (!payload) throw new Error("Artwork proof was empty.");
+  const binary = window.atob(payload.padEnd(Math.ceil(payload.length / 4) * 4, "="));
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { artworkData?: unknown };
+  if (typeof parsed.artworkData !== "string" || !parsed.artworkData.startsWith("data:image/")) throw new Error("Artwork preview was invalid.");
+  return parsed.artworkData;
+}
+
 function makeGuestId() {
   return window.crypto.randomUUID();
 }
 
 function compressImage(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
-    const image = new Image();
+    const image = new window.Image();
     const url = URL.createObjectURL(file);
     image.onload = () => {
       const scale = Math.min(1, 1280 / Math.max(image.width, image.height));
@@ -114,11 +136,18 @@ export default function Home() {
   const [cameraAttempt, setCameraAttempt] = useState(0);
   const [fieldScanMode, setFieldScanMode] = useState(false);
   const [fieldSuggestions, setFieldSuggestions] = useState<FieldSuggestion[]>([]);
+  const [surroundingsMode, setSurroundingsMode] = useState(false);
+  const [surroundingsFrame, setSurroundingsFrame] = useState("");
+  const [surroundingsTargets, setSurroundingsTargets] = useState<SurroundingsTarget[]>([]);
+  const [selectedTarget, setSelectedTarget] = useState<SurroundingsTarget | null>(null);
   const [cameraError, setCameraError] = useState("");
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const [reveal, setReveal] = useState<Reveal | null>(null);
   const [revealStage, setRevealStage] = useState<RevealStage>("ready");
+  const [unlockSlider, setUnlockSlider] = useState(0);
+  const [artBusy, setArtBusy] = useState(false);
+  const [savingCard, setSavingCard] = useState(false);
   const [showQuestForm, setShowQuestForm] = useState(false);
   const [showEventForm, setShowEventForm] = useState(false);
   const [questAcknowledged, setQuestAcknowledged] = useState(false);
@@ -130,6 +159,8 @@ export default function Home() {
   const streamRef = useRef<MediaStream | null>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
   const revealTimersRef = useRef<number[]>([]);
+  const savingCardRef = useRef(false);
+  const artRequestActiveRef = useRef(false);
 
   useEffect(() => {
     let id = window.localStorage.getItem("outside.guestId");
@@ -246,6 +277,10 @@ export default function Home() {
       setRevealStage("ready");
       return;
     }
+    if (!reveal.unlocked && !reveal.alreadySaved) {
+      setRevealStage("locked");
+      return;
+    }
     if (reveal.alreadySaved || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       setRevealStage("ready");
       return;
@@ -267,13 +302,13 @@ export default function Home() {
     }
     let cancelled = false;
     setWantedByLoading(true);
-    fetch(`/api/wishlist?guestId=${encodeURIComponent(guestId)}&cardName=${encodeURIComponent(reveal.card.name)}`)
-      .then((response) => jsonOrError<{ wantedBy: string[] }>(response))
-      .then((data) => { if (!cancelled) setWantedBy(data.wantedBy); })
+    fetch(`/api/wishlist?guestId=${encodeURIComponent(guestId)}&cardName=${encodeURIComponent(reveal.card.name)}&cardCategory=${encodeURIComponent(reveal.card.category)}`)
+      .then((response) => jsonOrError<{ wantedBy: { displayName: string; matchType: "card" | "category" }[] }>(response))
+      .then((data) => { if (!cancelled) setWantedBy(data.wantedBy.map((match) => `${match.displayName} · ${match.matchType === "card" ? "wants this card" : `wants ${reveal.card.category}`}`)); })
       .catch(() => { if (!cancelled) setWantedBy([]); })
       .finally(() => { if (!cancelled) setWantedByLoading(false); });
     return () => { cancelled = true; };
-  }, [reveal?.alreadySaved, reveal?.card.name, guestId, storageMode]);
+  }, [reveal?.alreadySaved, reveal?.card.name, reveal?.card.category, guestId, storageMode]);
 
   function handleVideoReady() {
     setVideoReady(true);
@@ -286,7 +321,39 @@ export default function Home() {
     setRevealStage("ready");
   }
 
-  async function recognize(imageData: string) {
+  async function unlockReveal(withPhotoArt: boolean) {
+    if (!reveal || artBusy || artRequestActiveRef.current || reveal.unlocked) return;
+    const personSubject = reveal.subjectType === "person" || /\b(person|people|human|man|woman|child|boy|girl|face|selfie)\b/i.test(`${reveal.card.name} ${reveal.card.category}`);
+    if (!withPhotoArt || personSubject) {
+      setReveal({ ...reveal, unlocked: true, sourceImage: undefined, card: { ...reveal.card, artworkKind: "category-illustration" } });
+      return;
+    }
+    if (!reveal.ticket || !reveal.sourceImage) return setToast({ message: "The focused photo is no longer available. Capture it again to make photo-based art.", tone: "error" });
+    artRequestActiveRef.current = true;
+    setArtBusy(true);
+    try {
+      const result = await fetch("/api/cards/art", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guestId, recognitionTicket: reveal.ticket, imageData: reveal.sourceImage, consent: true }),
+      }).then((response) => jsonOrError<{ artTicket: string; artworkKind: "xai-edited" }>(response));
+      const artworkData = artworkFromTicket(result.artTicket);
+      setReveal({ ...reveal, artTicket: result.artTicket, sourceImage: undefined, unlocked: true, artAttempted: true, artError: undefined, card: { ...reveal.card, artworkData, artworkKind: result.artworkKind } });
+    } catch (error) {
+      setReveal({ ...reveal, artAttempted: true, artError: error instanceof Error ? error.message : "Card art failed." });
+    } finally {
+      artRequestActiveRef.current = false;
+      setArtBusy(false);
+    }
+  }
+
+  function retryArtwork() {
+    if (!reveal?.sourceImage || artBusy || artRequestActiveRef.current) return;
+    setReveal({ ...reveal, artError: undefined, artAttempted: false });
+    void unlockReveal(true);
+  }
+
+  async function recognize(imageData: string, focusLabel?: string) {
     if (!guestId) return;
     setBusy(true);
     setToast(null);
@@ -294,9 +361,11 @@ export default function Home() {
       const result = await fetch("/api/recognize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ guestId, imageData }),
-      }).then((response) => jsonOrError<{ card: OwnedCard; ticket: string; recognition: { uncertain: boolean } }>(response));
-      setReveal({ card: result.card, ticket: result.ticket });
+        body: JSON.stringify({ guestId, imageData, focusLabel }),
+      }).then((response) => jsonOrError<{ card: OwnedCard; ticket: string; recognition: { uncertain: boolean; subjectType: "object" | "person" | "scene" } }>(response));
+      setRevealStage("locked");
+      setUnlockSlider(0);
+      setReveal({ card: result.card, ticket: result.ticket, sourceImage: imageData, subjectType: result.recognition.subjectType, unlocked: false });
     } catch (error) {
       setToast({ message: error instanceof Error ? error.message : "Could not identify this photo.", tone: "error" });
     } finally {
@@ -323,7 +392,30 @@ export default function Home() {
     }
   }
 
-  async function capture() {
+  async function scanSurroundingsFrame(imageData: string) {
+    setBusy(true);
+    setSurroundingsFrame(imageData);
+    setSurroundingsTargets([]);
+    setFieldSuggestions([]);
+    setSelectedTarget(null);
+    setToast(null);
+    try {
+      const result = await fetch("/api/scan-surroundings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageData }),
+      }).then((response) => jsonOrError<{ targets: SurroundingsTarget[] }>(response));
+      setSurroundingsTargets(result.targets);
+      if (!result.targets.length) setToast({ message: "No clear non-person objects in that frame. You can scan again or capture anything.", tone: "error" });
+    } catch (error) {
+      setSurroundingsFrame("");
+      setToast({ message: error instanceof Error ? error.message : "Could not scan this frame. Retry or capture anything.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function capture(mode: "anything" | "surroundings" = "anything") {
     const video = videoRef.current;
     if (!video?.videoWidth || !video.videoHeight) {
       setCameraError("Wait for the camera preview or upload a photo.");
@@ -339,7 +431,12 @@ export default function Home() {
     canvas.toBlob((blob) => {
       if (!blob) return setToast({ message: "Could not compress this frame.", tone: "error" });
       const reader = new FileReader();
-      reader.onload = () => fieldScanMode ? void scanFieldFrame(String(reader.result)) : void recognize(String(reader.result));
+      reader.onload = () => {
+        const imageData = String(reader.result);
+        if (mode === "surroundings") void scanSurroundingsFrame(imageData);
+        else if (fieldScanMode) void scanFieldFrame(imageData);
+        else void recognize(imageData, selectedTarget?.name);
+      };
       reader.onerror = () => setToast({ message: "Could not read this frame.", tone: "error" });
       reader.readAsDataURL(blob);
     }, "image/jpeg", 0.72);
@@ -352,12 +449,38 @@ export default function Home() {
     setBusy(true);
     try {
       const compressed = await compressImage(file);
-      if (fieldScanMode) await scanFieldFrame(compressed);
-      else await recognize(compressed);
+      if (surroundingsMode) await scanSurroundingsFrame(compressed);
+      else if (fieldScanMode) await scanFieldFrame(compressed);
+      else await recognize(compressed, selectedTarget?.name);
     } catch (error) {
       setToast({ message: error instanceof Error ? error.message : "Could not open this photo.", tone: "error" });
       setBusy(false);
     }
+  }
+
+  function beginSurroundingsScan() {
+    setSurroundingsMode(true);
+    setFieldScanMode(false);
+    setSurroundingsFrame("");
+    setSurroundingsTargets([]);
+    setSelectedTarget(null);
+    void capture("surroundings");
+  }
+
+  function continueWithTarget(target: SurroundingsTarget) {
+    setSelectedTarget(target);
+    setSurroundingsMode(false);
+    setSurroundingsFrame("");
+    setSurroundingsTargets([]);
+  }
+
+  function captureAnything() {
+    setSelectedTarget(null);
+    setSurroundingsMode(false);
+    setSurroundingsFrame("");
+    setSurroundingsTargets([]);
+    setFieldScanMode(false);
+    void capture("anything");
   }
 
   function storeLocalCard(card: OwnedCard) {
@@ -383,19 +506,28 @@ export default function Home() {
       setToast({ message: "Saved on this device only. Local demo card: no XP awarded.", tone: "success" });
       return;
     }
+    if (!reveal.unlocked) return setToast({ message: "Unlock the card before saving it.", tone: "error" });
     if (!reveal.ticket) return setToast({ message: "This card has no valid recognition ticket. Discover it again.", tone: "error" });
+    if (savingCardRef.current) return;
+    savingCardRef.current = true;
+    setSavingCard(true);
     try {
       await fetch("/api/deck", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ guestId, ticket: reveal.ticket }),
+        body: JSON.stringify({ guestId, ticket: reveal.ticket, artTicket: reveal.artTicket }),
       }).then((response) => jsonOrError<{ card: OwnedCard }>(response));
       const result = await fetch(`/api/deck?guestId=${encodeURIComponent(guestId)}`).then((response) => jsonOrError<{ cards: OwnedCard[] }>(response));
+      const savedCard = result.cards.find((card) => card.id === reveal.card.id);
+      if (!savedCard) throw new Error("Save was acknowledged, but the card was not found in the refreshed deck.");
       setCards(result.cards);
-      setReveal({ ...reveal, alreadySaved: true });
+      setReveal({ ...reveal, card: savedCard, sourceImage: undefined, alreadySaved: true });
       setToast({ message: "Discovery saved to your deck.", tone: "success" });
     } catch (error) {
       setToast({ message: error instanceof Error ? error.message : "Could not save this card.", tone: "error" });
+    } finally {
+      savingCardRef.current = false;
+      setSavingCard(false);
     }
   }
 
@@ -675,6 +807,7 @@ export default function Home() {
               <div className="camera-topline">
                 <div className="camera-live-label"><span className="live-dot" /> {videoReady ? "CAMERA LIVE" : "READY WHEN YOU ARE"}</div>
                 {fieldScanMode && <button className="field-mode-chip" onClick={() => { setFieldScanMode(false); setFieldSuggestions([]); }}>FIELD SCAN · EXIT</button>}
+                {surroundingsMode && !surroundingsFrame && <button className="field-mode-chip" onClick={() => setSurroundingsMode(false)}>SCAN · EXIT</button>}
               </div>
 
               {!videoReady && !busy && (
@@ -689,17 +822,31 @@ export default function Home() {
 
               {busy && <div className="recognizing-scrim"><div className="recognizing-orbit"><span /><span /><span /></div><span>LOOKING CLOSER</span><small>Just the still frame. No video is sent.</small></div>}
 
+              {surroundingsFrame && <div className="surroundings-review">
+                <Image src={surroundingsFrame} alt="Captured surroundings frame for object review" fill unoptimized sizes="100vw" className="surroundings-image" />
+                <div className="surroundings-review-shade" />
+                <div className="surroundings-targets">
+                  <span className="eyebrow">OBJECTS IN THIS FRAME · NOT LIVE TRACKING</span>
+                  {busy && <span className="surroundings-loading"><LoaderCircle size={14} className="spin" /> Looking for clear objects…</span>}
+                  {!busy && surroundingsTargets.length === 0 && <span className="surroundings-empty">No clear object labels. Try another frame or capture anything.</span>}
+                  <div className="surroundings-chip-list">{surroundingsTargets.map((target, index) => <button className={`surroundings-chip ${selectedTarget?.name === target.name ? "surroundings-chip--selected" : ""}`} key={`${target.name}-${index}`} onClick={() => continueWithTarget(target)}><Crosshair size={15} /><span><strong>{target.name}</strong><small>{target.category} · {target.observation}</small></span><ChevronRight size={15} /></button>)}</div>
+                  <button className="capture-anything-link" onClick={captureAnything}>Capture anything instead <ArrowUpRight size={14} /></button>
+                </div>
+              </div>}
+
               {fieldSuggestions.length > 0 && <div className="field-suggestions-panel"><span className="eyebrow">AI IDEAS FROM THIS FRAME · NOT VERIFIED PINS</span>{fieldSuggestions.map((suggestion, index) => <div className="field-suggestion" key={`${suggestion.name}-${index}`}><span>{suggestion.category}</span><strong>{suggestion.name}</strong><small>{suggestion.clue}</small></div>)}</div>}
+
+              {selectedTarget && <div className="focus-chip"><Crosshair size={14} /><span>Focus: <strong>{selectedTarget.name}</strong></span><button onClick={() => setSelectedTarget(null)} aria-label="Clear selected object"><X size={14} /></button></div>}
 
               <div className="camera-bottom">
                 <div className="camera-actions">
-                  <button className="upload-button" aria-label="Upload a photo" title="Upload a photo" onClick={() => uploadRef.current?.click()} disabled={busy}><Upload size={19} /></button>
+                  <button className="surroundings-action" onClick={beginSurroundingsScan} disabled={busy || !videoReady} aria-label="Scan surroundings"><ScanLine size={17} /><span>Scan surroundings</span></button>
                   <input ref={uploadRef} className="visually-hidden" type="file" accept="image/*" onChange={(event) => { void handleUpload(event.target.files?.[0]); event.currentTarget.value = ""; }} />
-                  <button className={`shutter ${busy ? "shutter--busy" : ""}`} onClick={() => void capture()} disabled={busy || !videoReady} aria-label="Discover with camera">
+                  <button className={`shutter ${busy ? "shutter--busy" : ""}`} onClick={() => void capture()} disabled={busy || !videoReady} aria-label={selectedTarget ? `Capture ${selectedTarget.name}` : "Capture anything"}>
                     <span className="shutter-ring">{busy ? <LoaderCircle size={24} className="spin" /> : <Aperture size={25} strokeWidth={1.7} />}</span>
-                    <span className="shutter-label">{busy ? "LOOKING" : fieldScanMode ? "FIELD SCAN" : "DISCOVER"}</span>
+                    <span className="shutter-label">{busy ? "LOOKING" : selectedTarget ? "CAPTURE TARGET" : "CAPTURE NOW"}</span>
                   </button>
-                    <span className="camera-action-spacer" />
+                  <button className="capture-upload" onClick={() => uploadRef.current?.click()} disabled={busy} aria-label="Upload a photo"><Upload size={18} /><span>Upload</span></button>
                 </div>
                   {visionConfigured === false && <small className="ai-status">AI NOT CONFIGURED</small>}
               </div>
@@ -758,7 +905,8 @@ export default function Home() {
               <div className="deck-empty"><div className="empty-specimen"><span className="specimen-orbit specimen-orbit--one" /><span className="specimen-orbit specimen-orbit--two" /><Sparkles size={24} /></div><span className="eyebrow">NOTHING IN HERE. YET.</span><h2>Your first find is waiting.</h2><p>Take a photo of something you notice. Your pocket field guide starts with the ordinary.</p><button className="primary-button" onClick={() => setActiveTab("explore")}><Aperture size={16} /> Find your first card</button></div>
             ) : (
               <div className="card-grid">{cards.map((card, index) => <article className="deck-card" key={card.id} style={{ animationDelay: `${index * 70}ms` }}>
-                  <button className="card-face-button" onClick={() => setReveal({ card, alreadySaved: true })} aria-label={`View ${card.name}`}>
+                  <button className="card-face-button" onClick={() => setReveal({ card, alreadySaved: true, unlocked: true })} aria-label={`View ${card.name}`}>
+                    {card.artworkData ? <Image src={card.artworkData} alt={`Anime-inspired ${card.name} card artwork`} width={800} height={702} unoptimized className="card-art-photo" /> : <CategoryIllustration category={card.category} />}
                   <div className={`card-art ${artClass(card.category)}`}><span className="art-orbit art-orbit--one" /><span className="art-orbit art-orbit--two" /><span className="art-sun" /><span className="art-ribbon">{card.category}</span><span className="art-monogram">{card.name.charAt(0).toUpperCase()}</span><span className="art-index">NO. {String(index + 1).padStart(2, "0")}</span><span className="art-sparkle">✳</span></div>
                   <span className="deck-card-copy"><span className="deck-card-top"><span className={`rarity rarity--${card.rarity}`}>{card.rarity}</span><span className="card-xp">+{card.xp} XP</span></span><strong>{card.name}</strong><small>{card.category} · {new Date(card.discoveredAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</small><span className="card-source">{sourceLabel(card.source)}</span></span>
                 </button>
@@ -829,9 +977,25 @@ export default function Home() {
 
       {toast && <div role="status" className={`toast ${toast.tone === "error" ? "toast--error" : "toast--success"}`}><span>{toast.tone === "error" ? "OOPS" : "NICE FIND"}</span><p>{toast.message}</p><button className="toast-close" onClick={() => setToast(null)} aria-label="Dismiss"><X size={16} /></button></div>}
 
-      {reveal && <div className="reveal-backdrop" role="presentation" onClick={() => setReveal(null)}><section className={`reveal-dialog reveal-dialog--${revealStage}`} role="dialog" aria-modal="true" aria-labelledby="reveal-title" onClick={(event) => event.stopPropagation()}>
+      {reveal && <div className="reveal-backdrop" role="presentation" onClick={() => setReveal(null)}><section className={`reveal-dialog reveal-dialog--${revealStage}`} role="dialog" aria-modal="true" aria-labelledby="reveal-title" aria-busy={savingCard || artBusy} onClick={(event) => event.stopPropagation()}>
         <button className="reveal-close" onClick={() => setReveal(null)} aria-label="Close card"><X size={19} /></button>
-        <div className={`reveal-art ${artClass(reveal.card.category)}`}><span className="art-orbit art-orbit--one" /><span className="art-orbit art-orbit--two" /><span className="art-sun" /><span className="art-ribbon">{reveal.card.category}</span><span className="reveal-confetti">✳</span><span className="reveal-monogram">{reveal.card.name.charAt(0).toUpperCase()}</span><span className="art-index">FIELD ART · NOT THE PHOTO</span><span className="reveal-scanline" /></div>
+        {reveal.unlocked && reveal.card.artworkData && <Image src={reveal.card.artworkData} alt={`Anime-inspired ${reveal.card.name} card artwork`} width={960} height={581} unoptimized className="reveal-art-photo" />}
+        {!reveal.alreadySaved && !reveal.unlocked && <div className="unlock-seal-panel">
+          <span className="eyebrow">FIELD SCAN COMPLETE</span>
+          <div className="unlock-seal-art"><span className="seal-ring seal-ring--outer" /><span className="seal-ring seal-ring--inner" /><Aperture size={34} /><Sparkles size={15} className="seal-sparkle" /></div>
+          <h2>Something noticed you back.</h2>
+          <p className="seal-category">{reveal.card.category}{selectedTarget ? ` · focused on ${selectedTarget.name}` : " · free discovery"}</p>
+          {reveal.card.uncertaintyNote && <div className="seal-uncertainty"><strong>This image is uncertain.</strong><span>{reveal.card.uncertaintyNote}</span><button className="text-button" onClick={() => { setReveal(null); setActiveTab("explore"); }}>Try another photo <RefreshCw size={14} /></button></div>}
+          {reveal.subjectType === "person" ? <p className="seal-privacy-note">Person-centered photos are not used for card artwork. The card will use a category illustration; no photo is retained.</p> : <label className="art-consent"><input type="checkbox" checked={Boolean(reveal.artConsent)} onChange={(event) => setReveal({ ...reveal, artConsent: event.target.checked })} /><span>Make illustrated card art from this photo. This sends one additional image-edit request to xAI; only the generated art, not your original photo, is saved with the card.</span></label>}
+          {reveal.artError && <div className="art-error" role="status"><span>{reveal.artError}</span><button className="text-button" onClick={retryArtwork} disabled={artBusy}>Retry art · another billed request</button></div>}
+          <label className="unlock-slider-label" htmlFor="unlock-slider">SWIPE TO UNLOCK</label>
+          <input id="unlock-slider" className="unlock-slider" type="range" min="0" max="100" value={unlockSlider} disabled={artBusy} aria-label="Swipe to unlock your discovery card" onChange={(event) => { const value = Number(event.target.value); setUnlockSlider(value); if (value >= 94) void unlockReveal(Boolean(reveal.artConsent) && reveal.subjectType !== "person"); }} />
+          {artBusy && <p className="art-progress"><LoaderCircle size={15} className="spin" /> Making your one-off illustration…</p>}
+          {reveal.artConsent && reveal.subjectType !== "person" && <button className="primary-button seal-unlock-button" onClick={() => void unlockReveal(true)} disabled={artBusy || reveal.unlocked}>{artBusy ? "Making art…" : "Create card art & unlock"}</button>}
+          <button className={reveal.artConsent && reveal.subjectType !== "person" ? "secondary-button seal-unlock-button" : "primary-button seal-unlock-button"} onClick={() => void unlockReveal(false)} disabled={artBusy || reveal.unlocked}>Unlock with category art</button>
+        </div>}
+        {reveal.unlocked && !reveal.card.artworkData && <CategoryIllustration category={reveal.card.category} variant="reveal" />}
+        <div className={`reveal-art ${artClass(reveal.card.category)}`}><span className="art-orbit art-orbit--one" /><span className="art-orbit art-orbit--two" /><span className="art-sun" /><span className="art-ribbon">{reveal.card.category}</span><span className="reveal-confetti">✳</span><span className="reveal-monogram">{reveal.card.name.charAt(0).toUpperCase()}</span><span className="art-index">{reveal.card.artworkKind === "xai-edited" ? "XAI-EDITED ART" : "CATEGORY ILLUSTRATION"}</span><span className="reveal-scanline" /></div>
         <div className="reveal-body"><div className="reveal-kicker"><span className="eyebrow">{reveal.card.source === "verified-quest" ? "VERIFIED QUEST FIND" : reveal.card.source === "local-demo" ? "LOCAL DEMO · ORGANIZER ENTERED" : reveal.alreadySaved ? "SAVED DISCOVERY" : "AI-GENERATED IDENTIFICATION"}</span><span className={`rarity rarity--${reveal.card.rarity}`}>{reveal.card.rarity}</span></div><h2 id="reveal-title">{reveal.card.name}</h2><p className="reveal-fact">{reveal.card.shortFact}</p>{categoryHumor(reveal.card.category) && <p className="card-humor">{categoryHumor(reveal.card.category)}</p>}{reveal.card.uncertaintyNote && <><p className="uncertainty-note">Identification uncertain: {reveal.card.uncertaintyNote}</p><button className="text-button retry-discovery" onClick={() => { setReveal(null); setActiveTab("explore"); }}>Try another photo <RefreshCw size={14} /></button></>}{reveal.alreadySaved && <section className="who-wants" aria-live="polite"><span className="eyebrow">WHO WANTS THIS?</span>{storageMode === "local-demo" ? <p>Local demo mode has no shared wishlist matches. Another account can add “{reveal.card.name}” in Community after connecting MongoDB.</p> : wantedByLoading ? <p>Checking opted-in wishlists…</p> : wantedBy.length ? <div className="who-wants-list">{wantedBy.map((name, index) => <span key={`${name}-${index}`}><Users size={14} />{name}</span>)}</div> : <p>No opted-in explorers have this on their wishlist yet. Another account can add “{reveal.card.name}” in Community.</p>}</section>}<div className={`reward-line ${revealStage === "reward" || revealStage === "ready" ? "reward-line--visible" : "reward-line--hidden"}`}><span><Zap size={15} /> {reveal.card.xp} XP</span><span>{reveal.card.category}</span></div>{reveal.card.source === "local-demo" && <p className="demo-card-note">Device-only test card. No verified campus data or XP is claimed.</p>}{revealStage !== "ready" && <button className="reveal-skip" onClick={skipRevealAnimation}>Skip animation</button>}<button className="primary-button reveal-save" onClick={() => void saveCard()} disabled={storageMode === "unavailable" || storageMode === "loading" || (revealStage !== "ready" && !reveal.alreadySaved)}><Check size={17} /> {reveal.alreadySaved ? "View in deck" : reveal.card.source === "local-demo" || storageMode === "local-demo" ? "Save demo card" : "Add to deck"}</button><button className="reveal-dismiss" onClick={() => setReveal(null)}>Not now</button></div>
       </section></div>}
     </main>
@@ -844,6 +1008,18 @@ function artClass(category: string) {
   if (normalized.includes("build") || normalized.includes("architecture") || normalized.includes("history")) return "card-art--brick";
   if (normalized.includes("art") || normalized.includes("object") || normalized.includes("uncertain")) return "card-art--ink";
   return "card-art--sun";
+}
+
+function CategoryIllustration({ category, variant = "card" }: { category: string; variant?: "card" | "reveal" }) {
+  const value = category.toLowerCase();
+  const Icon = /plant|nature|tree|flower/.test(value) ? Leaf
+    : /build|architecture|structure/.test(value) ? Building2
+      : /bird|animal|wildlife/.test(value) ? Bird
+        : /sign/.test(value) ? Signpost
+          : /art/.test(value) ? Palette
+            : /person|people|human/.test(value) ? Users
+              : Package;
+  return <span className={`category-illustration category-illustration--${variant} ${artClass(category)}`} aria-label={`${category} category illustration`}><span className="category-illustration-orbit" /><Icon size={variant === "reveal" ? 58 : 42} strokeWidth={1.35} /><small>{category} · CATEGORY ART</small></span>;
 }
 
 function sourceLabel(source: DiscoveryCard["source"]) {

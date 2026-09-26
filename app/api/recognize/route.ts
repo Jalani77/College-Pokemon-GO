@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { issueTicket, ticketSigningConfigured } from "@/lib/tickets";
@@ -7,6 +8,7 @@ import { recognizeImage } from "@/lib/vision";
 const requestSchema = z.object({
   guestId: z.string().uuid(),
   imageData: z.string().max(1_400_000),
+  focusLabel: z.string().trim().min(2).max(60).optional(),
 });
 
 export async function POST(request: Request) {
@@ -39,7 +41,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const recognition = await recognizeImage(body.imageData);
+    const recognition = await recognizeImage(body.imageData, body.focusLabel);
     const uncertain = recognition.uncertain;
     const card = {
       id: randomUUID(),
@@ -53,7 +55,8 @@ export async function POST(request: Request) {
       discoveredAt: new Date().toISOString(),
     };
 
-    return NextResponse.json({ recognition: { ...recognition, uncertain }, card, ticket: issueTicket({ guestId: body.guestId, card, issuedAt: Date.now() }) });
+    const imageHash = createHash("sha256").update(body.imageData).digest("hex");
+    return NextResponse.json({ recognition: { ...recognition, uncertain }, card, ticket: issueTicket({ guestId: body.guestId, card, imageHash, subjectType: recognition.subjectType, issuedAt: Date.now() }) });
   } catch (error) {
     const message = error instanceof Error ? error.message : "RECOGNITION_FAILED";
     if (message === "AI_NOT_CONFIGURED") {

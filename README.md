@@ -29,6 +29,8 @@ To enable shared MongoDB persistence:
 
 To enable photo recognition, create an API key in the [xAI console](https://console.x.ai/) and set `XAI_API_KEY`. `VISION_API_KEY` is accepted as a legacy fallback. `VISION_MODEL` defaults to `grok-2-vision-1212`. The key is only read by the server integration in `lib/vision.ts`; keep billing limits on the provider account. Captured photos are compressed to a JPEG still, sent once for recognition, and are not stored in MongoDB or retained by this app.
 
+Optional consented card art uses xAI's image-edit endpoint with `XAI_IMAGE_MODEL` (default `grok-imagine-image-2.0`). Each selected scan can incur one additional billed image-edit request; check current xAI pricing before enabling it. The original photo remains memory-only; only the generated, size-limited artwork is retained in MongoDB with the saved card. Person-centered recognitions cannot use photo artwork. If image editing fails or consent is declined, a clearly labeled category illustration is used instead.
+
 Set values only in the ignored `.env.local` file. `.env.example` documents the variable names without credentials. The app recognizes guest users with a browser-generated UUID; this is a demo convenience, **not authentication**. Before production use, add real sign-in/session verification, authorization tied to a verified organizer account, endpoint rate limits, abuse reporting, and a privacy/retention policy. The demo organizer token alone is not production event authorization.
 
 ## Data and reward rules
@@ -40,7 +42,9 @@ Set values only in the ignored `.env.local` file. `.env.example` documents the v
 - Group quests only appear after an organizer supplies a future date, meeting point, organizer, and reward. RSVPs are idempotent. Events do not confer a reward card just for RSVP.
 - Community matches and “Who wants this?” are only shown for users who explicitly opt in with a display name. Guest IDs, contact details, and location are not returned. Local demo wishlists stay on the device.
 - Field Scan analyzes only a still frame captured when requested. Its broad suggestions are AI ideas, not verified quests or map pins.
+- “Scan surroundings” freezes one user-selected still and returns non-person object labels. xAI does not supply reliable boxes in this integration, so targets are selectable chips below the frame; no coordinates or live tracking are claimed. “Capture now” remains available without scanning.
+- There is no chat composer/message API in this codebase yet. Wishlist matches are displayed, but messaging is not presented as functional until a real chat flow exists.
 
 ## Current demo boundary
 
-The live camera and desktop upload UI, still-image compression, xAI recognition, signed-card save endpoint, card reveal, OpenStreetMap, GPS opt-in, Field Scan, deck, wishlist opt-in, and group-quest RSVP are implemented. AI recognition requires `XAI_API_KEY` or the legacy `VISION_API_KEY`; shared deck/community/map/event persistence requires a reachable Atlas database. Playwright uses mocked service responses for client-flow tests; connect a valid Atlas URI to verify actual persistence and multiple-account matching end to end.
+The live camera and desktop upload UI, still-image compression, xAI recognition, multi-object frame labels, image-bound signed-card save endpoint, swipe-to-unlock reveal, optional consented xAI image editing, OpenStreetMap, GPS opt-in, deck, and wishlist opt-in are implemented. AI requires `XAI_API_KEY` or the legacy `VISION_API_KEY`; shared persistence requires a reachable Atlas database. Generated art adds one billed image-edit request per consented selected scan. Playwright uses mocked service responses for client-flow tests; the running Atlas-backed Deck was also verified separately. A chat composer does not yet exist.

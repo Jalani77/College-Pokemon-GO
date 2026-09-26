@@ -23,7 +23,9 @@ export async function GET(request: Request) {
   const parsedGuestId = z.string().uuid().safeParse(guestId);
   if (!parsedGuestId.success) return NextResponse.json({ error: "Invalid guest ID." }, { status: 400 });
   const validGuestId = parsedGuestId.data;
-  const cardName = new URL(request.url).searchParams.get("cardName")?.trim();
+  const parameters = new URL(request.url).searchParams;
+  const cardName = parameters.get("cardName")?.trim();
+  const cardCategory = parameters.get("cardCategory")?.trim();
   try {
     const database = await getDatabase();
     const users = database.collection<WishlistUser>("users");
@@ -31,17 +33,25 @@ export async function GET(request: Request) {
     const names = Array.isArray(user?.lookingFor) ? user.lookingFor : [];
     const publicProfileFilter: Filter<WishlistUser> = { visibilityOptIn: true, displayName: { $type: "string", $ne: "" } };
     const matches = names.length ? await users.find({ guestId: { $ne: validGuestId }, ...publicProfileFilter, lookingFor: { $in: names } }, { projection: { displayName: 1, lookingFor: 1 } }).toArray() : [];
-    const wantedBy = cardName ? await users.find({
+    const exactPattern = cardName ? `^${escapeRegex(cardName)}$` : "(?!)";
+    const categoryPattern = cardCategory ? `^${escapeRegex(cardCategory)}$` : "(?!)";
+    const wantedBy = cardName || cardCategory ? await users.find({
       guestId: { $ne: validGuestId },
       ...publicProfileFilter,
-      lookingFor: { $regex: `^${escapeRegex(cardName)}$`, $options: "i" },
-    }, { projection: { displayName: 1 } }).toArray() : [];
+      $or: [
+        ...(cardName ? [{ lookingFor: { $regex: exactPattern, $options: "i" } }] : []),
+        ...(cardCategory ? [{ lookingFor: { $regex: categoryPattern, $options: "i" } }] : []),
+      ],
+    }, { projection: { displayName: 1, lookingFor: 1 } }).toArray() : [];
     return NextResponse.json({
       names,
       displayName: user?.displayName || "",
       visibilityOptIn: Boolean(user?.visibilityOptIn),
       matches: matches.flatMap((match) => (match.lookingFor || []).filter((name) => names.some((ownName) => ownName.toLowerCase() === name.toLowerCase())).map((name) => ({ name, displayName: match.displayName! }))),
-      wantedBy: wantedBy.map((person) => person.displayName!),
+      wantedBy: wantedBy.map((person) => ({
+        displayName: person.displayName!,
+        matchType: (person.lookingFor || []).some((name) => cardName && name.toLowerCase() === cardName.toLowerCase()) ? "card" : "category",
+      })),
       storage: "mongodb",
     });
   } catch (error) {

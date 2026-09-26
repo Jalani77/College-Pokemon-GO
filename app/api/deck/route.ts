@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getDatabase, mongoFailureCode, mongoUnavailable } from "@/lib/db";
-import { readTicket } from "@/lib/tickets";
+import { readArtworkTicket, readTicket } from "@/lib/tickets";
 
 const guestSchema = z.string().uuid();
 
@@ -38,9 +38,9 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  let body: { guestId: string; ticket: string };
+  let body: { guestId: string; ticket: string; artTicket?: string };
   try {
-    body = z.object({ guestId: guestSchema, ticket: z.string().min(20).max(8000) }).parse(await request.json());
+    body = z.object({ guestId: guestSchema, ticket: z.string().min(20).max(8000), artTicket: z.string().min(40).max(4_700_000).optional() }).parse(await request.json());
   } catch {
     return NextResponse.json({ error: "A valid recognition ticket is required." }, { status: 400 });
   }
@@ -51,6 +51,9 @@ export async function POST(request: Request) {
     }
     return NextResponse.json({ error: "This recognition proof is invalid or expired. Discover the object again." }, { status: 403 });
   }
+  const artwork = body.artTicket ? readArtworkTicket(body.artTicket, body.guestId, ticket.card.id) : null;
+  if (body.artTicket && !artwork) return NextResponse.json({ error: "Card artwork proof is invalid or expired. Retry artwork before saving." }, { status: 403 });
+  const card = artwork ? { ...ticket.card, artworkData: artwork.artworkData, artworkKind: "xai-edited" as const } : ticket.card;
 
   try {
     const database = await getDatabase();
@@ -60,16 +63,16 @@ export async function POST(request: Request) {
       { upsert: true },
     );
     await database.collection<{ _id: string } & Record<string, unknown>>("cards").updateOne(
-      { _id: ticket.card.id },
-      { $setOnInsert: { ...ticket.card } },
+      { _id: card.id },
+      { $setOnInsert: { ...card } },
       { upsert: true },
     );
     const result = await database.collection("ownedCards").updateOne(
-      { guestId: body.guestId, cardId: ticket.card.id },
-      { $setOnInsert: { ...ticket.card, cardId: ticket.card.id, guestId: body.guestId, wishlist: false } },
+      { guestId: body.guestId, cardId: card.id },
+      { $setOnInsert: { ...card, cardId: card.id, guestId: body.guestId, wishlist: false } },
       { upsert: true },
     );
-    return NextResponse.json({ card: ticket.card, storage: "mongodb", alreadySaved: result.upsertedCount === 0 });
+    return NextResponse.json({ card, storage: "mongodb", alreadySaved: result.upsertedCount === 0 });
   } catch (error) {
     if (error instanceof Error && (/bad auth|authentication failed/i.test(error.message) || ["18", "8000"].includes(mongoFailureCode(error)))) {
       return NextResponse.json({ error: "MongoDB rejected the database user's credentials. This card was not saved; verify the Atlas Database Access username and password, URL-encode special characters in MONGODB_URI, and retry." }, { status: 503 });
