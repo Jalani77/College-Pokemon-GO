@@ -1,0 +1,35 @@
+<svg viewBox="0 0 640 800" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Illustrated black-and-white soccer ball with pentagon panels and a green motion arc">
+  <defs>
+    <radialGradient id="ball-sphere" cx="38%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="55%" stop-color="#eef1ee" />
+      <stop offset="100%" stop-color="#c3c9c2" />
+    </radialGradient>
+    <linearGradient id="ball-arc" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2f9c6d" />
+      <stop offset="100%" stop-color="#1c6b4f" />
+    </linearGradient>
+  </defs>
+
+  <rect width="640" height="800" fill="#eefaf4" />
+  <path d="M60 560 C160 460 260 610 380 520 C470 452 540 500 600 420" fill="none" stroke="url(#ball-arc)" stroke-width="26" stroke-linecap="round" opacity=".28" />
+  <g opacity=".3" stroke="#1c6b4f" stroke-width="6" stroke-linecap="round">
+    <line x1="470" y1="150" x2="560" y2="100" />
+    <line x1="500" y1="210" x2="574" y2="168" />
+  </g>
+
+  <ellipse cx="320" cy="662" rx="156" ry="26" fill="#0c2620" opacity=".16" />
+
+  <circle cx="320" cy="417" r="230" fill="url(#ball-sphere)" stroke="#0c2620" stroke-width="6" />
+  <ellipse cx="248" cy="330" rx="58" ry="40" fill="#ffffff" opacity=".55" transform="rotate(-20 248 330)" />
+
+  <g fill="#141a17">
+    <path d="M320 345 L388.5 394.7 L362.3 475.2 L277.7 475.2 L251.5 394.7 Z" />
+    <path d="M320 345 Q452.3 235.0 388.5 394.7 L320 345 Z" />
+    <path d="M388.5 394.7 Q534.0 486.5 362.3 475.2 L388.5 394.7 Z" />
+    <path d="M362.3 475.2 Q320 642 277.7 475.2 L362.3 475.2 Z" />
+    <path d="M277.7 475.2 Q106 486.5 251.5 394.7 L277.7 475.2 Z" />
+    <path d="M251.5 394.7 Q187.7 235.0 320 345 L251.5 394.7 Z" />
+  </g>
+  <circle cx="320" cy="417" r="230" fill="none" stroke="#0c2620" stroke-width="6" />
+</svg>

@@ -1,0 +1,40 @@
+<svg viewBox="0 0 640 800" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Illustrated navy backpack with tan straps and an orange zipper pull">
+  <defs>
+    <linearGradient id="pack-body" x1="10%" y1="0%" x2="90%" y2="100%">
+      <stop offset="0%" stop-color="#243863" />
+      <stop offset="100%" stop-color="#141d33" />
+    </linearGradient>
+    <linearGradient id="pack-flap" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2f4a80" />
+      <stop offset="100%" stop-color="#233c6c" />
+    </linearGradient>
+    <linearGradient id="pack-strap" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e8b876" />
+      <stop offset="100%" stop-color="#c98a3f" />
+    </linearGradient>
+  </defs>
+
+  <rect width="640" height="800" fill="#fff6e8" />
+  <path d="M0 640 L260 380 L360 480 L640 200 L640 800 L0 800 Z" fill="#d97a1f" opacity=".12" />
+  <g opacity=".28" stroke="#d97a1f" stroke-width="6" stroke-linecap="round">
+    <line x1="90" y1="200" x2="190" y2="150" />
+    <line x1="120" y1="260" x2="200" y2="220" />
+  </g>
+
+  <ellipse cx="320" cy="672" rx="150" ry="24" fill="#241a0c" opacity=".16" />
+
+  <path d="M250 296 C240 240 260 200 320 200 C380 200 400 240 390 296" fill="none" stroke="url(#pack-strap)" stroke-width="30" stroke-linecap="round" />
+  <path d="M242 300 C224 380 224 480 240 566" fill="none" stroke="url(#pack-strap)" stroke-width="32" stroke-linecap="round" />
+  <path d="M398 300 C416 380 416 480 400 566" fill="none" stroke="url(#pack-strap)" stroke-width="32" stroke-linecap="round" />
+
+  <rect x="205" y="250" width="230" height="120" rx="52" fill="url(#pack-flap)" />
+  <rect x="190" y="300" width="260" height="330" rx="46" fill="url(#pack-body)" />
+  <ellipse cx="470" cy="470" rx="26" ry="60" fill="#0f1626" opacity=".55" />
+
+  <rect x="228" y="430" width="184" height="150" rx="28" fill="#101a30" />
+  <rect x="246" y="450" width="148" height="110" rx="18" fill="none" stroke="#3a4d7a" stroke-width="3" stroke-dasharray="7 8" opacity=".8" />
+
+  <rect x="308" y="420" width="24" height="16" rx="6" fill="#d97a1f" />
+  <line x1="320" y1="420" x2="320" y2="392" stroke="#d97a1f" stroke-width="6" stroke-linecap="round" />
+  <circle cx="320" cy="386" r="9" fill="#f4a94a" />
+</svg>
