@@ -42,6 +42,12 @@ export type Recognition = {
   objectName: string;
   category: string;
   shortFact: string;
-  confidence: number;
+  uncertain: boolean;
   uncertaintyNote: string;
+};
+
+export type FieldSuggestion = {
+  name: string;
+  clue: string;
+  category: string;
 };

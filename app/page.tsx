@@ -2,12 +2,12 @@
 
 import dynamic from "next/dynamic";
 import {
-  Aperture, ArrowDown, ArrowUpRight, Check, ChevronRight, Clock3, Compass, Heart,
+  Aperture, ArrowUpRight, Check, ChevronRight, Clock3, Compass, Heart,
   Leaf, LoaderCircle, LocateFixed, Map as MapIcon, Plus, RefreshCw, Sparkles,
-  Sunrise, Target, Upload, Users, X, Zap,
+  Sunrise, Upload, Users, X, Zap,
 } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import type { DiscoveryCard, GroupEvent, LocationQuest } from "@/lib/types";
+import type { DiscoveryCard, FieldSuggestion, GroupEvent, LocationQuest } from "@/lib/types";
 
 const CampusMap = dynamic(() => import("@/components/CampusMap"), {
   ssr: false,
@@ -19,6 +19,7 @@ type StorageMode = "loading" | "mongodb" | "local-demo" | "unavailable";
 type OwnedCard = DiscoveryCard & { wishlist?: boolean };
 type AppEvent = GroupEvent & { demo?: boolean };
 type Reveal = { card: OwnedCard; ticket?: string; alreadySaved?: boolean };
+type RevealStage = "scanning" | "identified" | "materialized" | "reward" | "ready";
 type Toast = { message: string; tone?: "error" | "success" };
 
 const NAV_ITEMS: { id: AppTab; label: string; Icon: typeof Compass }[] = [
@@ -33,6 +34,7 @@ const LOCAL_KEYS = {
   locations: "outside.demo.locations.v1",
   events: "outside.demo.events.v1",
   wanted: "outside.demo.wishlist.v1",
+  profile: "outside.demo.profile.v1",
 };
 
 function readLocal<T>(key: string, fallback: T): T {
@@ -98,15 +100,24 @@ export default function Home() {
   const [visionConfigured, setVisionConfigured] = useState<boolean | null>(null);
   const [cards, setCards] = useState<OwnedCard[]>([]);
   const [locations, setLocations] = useState<LocationQuest[]>([]);
+  const [gpsPosition, setGpsPosition] = useState<[number, number] | null>(null);
+  const [gpsStatus, setGpsStatus] = useState<"unrequested" | "locating" | "located" | "unavailable">("unrequested");
   const [events, setEvents] = useState<AppEvent[]>([]);
   const [lookingFor, setLookingFor] = useState<string[]>([]);
-  const [wishlistMatches, setWishlistMatches] = useState<{ name: string; explorer: string }[]>([]);
+  const [wishlistMatches, setWishlistMatches] = useState<{ name: string; displayName: string }[]>([]);
+  const [wantedBy, setWantedBy] = useState<string[]>([]);
+  const [wantedByLoading, setWantedByLoading] = useState(false);
+  const [displayName, setDisplayName] = useState("");
+  const [visibilityOptIn, setVisibilityOptIn] = useState(false);
   const [videoReady, setVideoReady] = useState(false);
   const [cameraAttempt, setCameraAttempt] = useState(0);
+  const [fieldScanMode, setFieldScanMode] = useState(false);
+  const [fieldSuggestions, setFieldSuggestions] = useState<FieldSuggestion[]>([]);
   const [cameraError, setCameraError] = useState("");
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const [reveal, setReveal] = useState<Reveal | null>(null);
+  const [revealStage, setRevealStage] = useState<RevealStage>("ready");
   const [showQuestForm, setShowQuestForm] = useState(false);
   const [showEventForm, setShowEventForm] = useState(false);
   const [questAcknowledged, setQuestAcknowledged] = useState(false);
@@ -117,6 +128,7 @@ export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
+  const revealTimersRef = useRef<number[]>([]);
 
   useEffect(() => {
     let id = window.localStorage.getItem("outside.guestId");
@@ -142,6 +154,9 @@ export default function Home() {
           setLocations(readLocal<LocationQuest[]>(LOCAL_KEYS.locations, []));
           setEvents(readLocal<AppEvent[]>(LOCAL_KEYS.events, []));
           setLookingFor(readLocal<string[]>(LOCAL_KEYS.wanted, []));
+          const profile = readLocal<{ displayName: string; visibilityOptIn: boolean }>(LOCAL_KEYS.profile, { displayName: "", visibilityOptIn: false });
+          setDisplayName(profile.displayName);
+          setVisibilityOptIn(profile.visibilityOptIn);
           setStorageMode("local-demo");
           return;
         }
@@ -164,6 +179,8 @@ export default function Home() {
         setEvents(eventData.events || []);
         setLookingFor(wishlist.names || []);
         setWishlistMatches(wishlist.matches || []);
+        setDisplayName(wishlist.displayName || "");
+        setVisibilityOptIn(Boolean(wishlist.visibilityOptIn));
         setStorageMode("mongodb");
       } catch (error) {
         if (cancelled) return;
@@ -219,9 +236,49 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    if (!reveal) {
+      setRevealStage("ready");
+      return;
+    }
+    if (reveal.alreadySaved || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setRevealStage("ready");
+      return;
+    }
+    const stages: RevealStage[] = ["scanning", "identified", "materialized", "reward", "ready"];
+    const timers = stages.map((stage, index) => window.setTimeout(() => setRevealStage(stage), index * 300));
+    revealTimersRef.current = timers;
+    return () => {
+      timers.forEach(window.clearTimeout);
+      if (revealTimersRef.current === timers) revealTimersRef.current = [];
+    };
+  }, [reveal]);
+
+  useEffect(() => {
+    if (!reveal?.alreadySaved || !guestId || storageMode === "loading") return;
+    if (storageMode !== "mongodb") {
+      setWantedBy([]);
+      return;
+    }
+    let cancelled = false;
+    setWantedByLoading(true);
+    fetch(`/api/wishlist?guestId=${encodeURIComponent(guestId)}&cardName=${encodeURIComponent(reveal.card.name)}`)
+      .then((response) => jsonOrError<{ wantedBy: string[] }>(response))
+      .then((data) => { if (!cancelled) setWantedBy(data.wantedBy); })
+      .catch(() => { if (!cancelled) setWantedBy([]); })
+      .finally(() => { if (!cancelled) setWantedByLoading(false); });
+    return () => { cancelled = true; };
+  }, [reveal?.alreadySaved, reveal?.card.name, guestId, storageMode]);
+
   function handleVideoReady() {
     setVideoReady(true);
     setCameraError("");
+  }
+
+  function skipRevealAnimation() {
+    revealTimersRef.current.forEach(window.clearTimeout);
+    revealTimersRef.current = [];
+    setRevealStage("ready");
   }
 
   async function recognize(imageData: string) {
@@ -237,6 +294,25 @@ export default function Home() {
       setReveal({ card: result.card, ticket: result.ticket });
     } catch (error) {
       setToast({ message: error instanceof Error ? error.message : "Could not identify this photo.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function scanFieldFrame(imageData: string) {
+    setBusy(true);
+    setFieldSuggestions([]);
+    setToast(null);
+    try {
+      const result = await fetch("/api/field-scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageData }),
+      }).then((response) => jsonOrError<{ suggestions: FieldSuggestion[] }>(response));
+      setFieldSuggestions(result.suggestions);
+      if (!result.suggestions.length) setToast({ message: "No clear discovery prompts in that frame. Try another view.", tone: "error" });
+    } catch (error) {
+      setToast({ message: error instanceof Error ? error.message : "Field scan failed. Retry with another frame.", tone: "error" });
     } finally {
       setBusy(false);
     }
@@ -258,7 +334,7 @@ export default function Home() {
     canvas.toBlob((blob) => {
       if (!blob) return setToast({ message: "Could not compress this frame.", tone: "error" });
       const reader = new FileReader();
-      reader.onload = () => void recognize(String(reader.result));
+      reader.onload = () => fieldScanMode ? void scanFieldFrame(String(reader.result)) : void recognize(String(reader.result));
       reader.onerror = () => setToast({ message: "Could not read this frame.", tone: "error" });
       reader.readAsDataURL(blob);
     }, "image/jpeg", 0.72);
@@ -271,7 +347,8 @@ export default function Home() {
     setBusy(true);
     try {
       const compressed = await compressImage(file);
-      await recognize(compressed);
+      if (fieldScanMode) await scanFieldFrame(compressed);
+      else await recognize(compressed);
     } catch (error) {
       setToast({ message: error instanceof Error ? error.message : "Could not open this photo.", tone: "error" });
       setBusy(false);
@@ -310,7 +387,7 @@ export default function Home() {
       }).then((response) => jsonOrError<{ card: OwnedCard }>(response));
       const result = await fetch(`/api/deck?guestId=${encodeURIComponent(guestId)}`).then((response) => jsonOrError<{ cards: OwnedCard[] }>(response));
       setCards(result.cards);
-      setReveal(null);
+      setReveal({ ...reveal, alreadySaved: true });
       setToast({ message: "Discovery saved to your deck.", tone: "success" });
     } catch (error) {
       setToast({ message: error instanceof Error ? error.message : "Could not save this card.", tone: "error" });
@@ -353,6 +430,31 @@ export default function Home() {
     if (!guestId) return;
     const response = await fetch(`/api/deck?guestId=${encodeURIComponent(guestId)}`).then((item) => jsonOrError<{ cards: OwnedCard[] }>(item));
     setCards(response.cards);
+  }
+
+  function startFieldScan() {
+    setFieldSuggestions([]);
+    setFieldScanMode(true);
+    setActiveTab("explore");
+  }
+
+  function locateMe() {
+    if (!navigator.geolocation) {
+      setGpsStatus("unavailable");
+      return;
+    }
+    setGpsStatus("locating");
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setGpsPosition([position.coords.latitude, position.coords.longitude]);
+        setGpsStatus("located");
+      },
+      () => {
+        setGpsPosition(null);
+        setGpsStatus("unavailable");
+      },
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 30000 },
+    );
   }
 
   async function createQuest(event: FormEvent<HTMLFormElement>) {
@@ -509,6 +611,32 @@ export default function Home() {
     setLookingFor(next);
   }
 
+  async function saveWishlistProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (visibilityOptIn && !displayName.trim()) return setToast({ message: "Choose the display name people will see before opting in.", tone: "error" });
+    if (storageMode === "mongodb") {
+      try {
+        await fetch("/api/wishlist", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ guestId, action: "profile", displayName, visibilityOptIn }),
+        }).then((response) => jsonOrError(response));
+        const data = await fetch(`/api/wishlist?guestId=${encodeURIComponent(guestId)}`).then((response) => jsonOrError<{ matches: typeof wishlistMatches }>(response));
+        setWishlistMatches(data.matches);
+        setToast({ message: "Wishlist visibility preference saved.", tone: "success" });
+      } catch (error) {
+        setToast({ message: error instanceof Error ? error.message : "Could not save visibility preference.", tone: "error" });
+      }
+      return;
+    }
+    if (storageMode === "local-demo") {
+      writeLocal(LOCAL_KEYS.profile, { displayName: displayName.trim(), visibilityOptIn });
+      setToast({ message: "Saved on this device only. No other explorers can see it in local demo mode.", tone: "success" });
+      return;
+    }
+    setToast({ message: "Storage is unavailable.", tone: "error" });
+  }
+
   const xp = cards.reduce((total, card) => total + (card.xp || 0), 0);
   const level = Math.floor(xp / 100) + 1;
   const nextLevelProgress = xp % 100;
@@ -539,38 +667,36 @@ export default function Home() {
               <video ref={videoRef} className={`camera-feed ${videoReady ? "camera-feed--live" : ""}`} autoPlay playsInline muted onLoadedMetadata={handleVideoReady} />
               <div className="camera-grain" aria-hidden="true" />
               <div className="camera-vignette" aria-hidden="true" />
-              <div className="camera-corners" aria-hidden="true"><i /><i /><i /><i /></div>
-
               <div className="camera-topline">
                 <div className="camera-live-label"><span className="live-dot" /> {videoReady ? "CAMERA LIVE" : "READY WHEN YOU ARE"}</div>
-                <div className="camera-count"><Target size={14} /> {cards.length.toString().padStart(2, "0")} FOUND</div>
+                {fieldScanMode && <button className="field-mode-chip" onClick={() => { setFieldScanMode(false); setFieldSuggestions([]); }}>FIELD SCAN · EXIT</button>}
               </div>
 
               {!videoReady && !busy && (
                 <div className="camera-empty">
                   <div className="camera-empty-icon"><Aperture size={25} strokeWidth={1.5} /></div>
-                  <p className="camera-empty-eyebrow">TAKE THE LONG WAY</p>
-                  <h1>There&apos;s more<br />out there.</h1>
-                  <p className="camera-empty-copy">Point your camera at something you&apos;ve walked past a hundred times.</p>
+                  <h1>{cameraError ? "Camera unavailable" : "Starting camera"}</h1>
                   {cameraError && <p className="camera-error">{cameraError}</p>}
                   {cameraError && <button className="text-button camera-retry" onClick={() => { setCameraError(""); setCameraAttempt((attempt) => attempt + 1); }}><RefreshCw size={14} /> Retry camera</button>}
+                  {cameraError && <button className="upload-fallback" onClick={() => uploadRef.current?.click()}><Upload size={15} /> Choose a photo</button>}
                 </div>
               )}
 
               {busy && <div className="recognizing-scrim"><div className="recognizing-orbit"><span /><span /><span /></div><span>LOOKING CLOSER</span><small>Just the still frame. No video is sent.</small></div>}
 
+              {fieldSuggestions.length > 0 && <div className="field-suggestions-panel"><span className="eyebrow">AI IDEAS FROM THIS FRAME · NOT VERIFIED PINS</span>{fieldSuggestions.map((suggestion, index) => <div className="field-suggestion" key={`${suggestion.name}-${index}`}><span>{suggestion.category}</span><strong>{suggestion.name}</strong><small>{suggestion.clue}</small></div>)}</div>}
+
               <div className="camera-bottom">
-                <div className="camera-prompt"><span className="eyebrow">YOUR NEXT LITTLE DISCOVERY</span><span>Find something worth noticing.</span>{visionConfigured === false && <small className="ai-status">AI NOT CONFIGURED · ADD VISION_API_KEY</small>}</div>
                 <div className="camera-actions">
                   <button className="upload-button" aria-label="Upload a photo" title="Upload a photo" onClick={() => uploadRef.current?.click()} disabled={busy}><Upload size={19} /></button>
                   <input ref={uploadRef} className="visually-hidden" type="file" accept="image/*" onChange={(event) => { void handleUpload(event.target.files?.[0]); event.currentTarget.value = ""; }} />
                   <button className={`shutter ${busy ? "shutter--busy" : ""}`} onClick={() => void capture()} disabled={busy || !videoReady} aria-label="Discover with camera">
                     <span className="shutter-ring">{busy ? <LoaderCircle size={24} className="spin" /> : <Aperture size={25} strokeWidth={1.7} />}</span>
-                    <span className="shutter-label">{busy ? "LOOKING" : "DISCOVER"}</span>
+                    <span className="shutter-label">{busy ? "LOOKING" : fieldScanMode ? "FIELD SCAN" : "DISCOVER"}</span>
                   </button>
-                  <button className="look-button" onClick={() => setActiveTab("map")} aria-label="Explore nearby quests" title="Explore nearby quests"><Compass size={19} /></button>
+                    <span className="camera-action-spacer" />
                 </div>
-                <div className="camera-footnote"><span>TAKE A CLOSER LOOK</span><ArrowDown size={12} /><span>KEEP WHAT YOU FIND</span></div>
+                  {visionConfigured === false && <small className="ai-status">AI NOT CONFIGURED</small>}
               </div>
             </div>
 
@@ -585,8 +711,8 @@ export default function Home() {
           <section className="page-section map-view">
             <div className="section-heading">
               <span className="eyebrow"><LocateFixed size={13} /> THE CAMPUS, RE-MAPPED</span>
-              <div className="heading-line"><h1>Go find it.</h1><button className="pill-action" onClick={() => { setShowQuestForm(!showQuestForm); setQuestAcknowledged(false); }}><Plus size={15} /> Add a quest</button></div>
-              <p>Clues from people who know the way. Pins appear only after an organizer adds verified coordinates.</p>
+              <div className="heading-line"><h1>Go find it.</h1><div className="map-actions"><button className="pill-action" onClick={locateMe} disabled={gpsStatus === "locating"}><LocateFixed size={15} /> {gpsStatus === "locating" ? "Locating" : "My location"}</button><button className="pill-action" onClick={startFieldScan}><Aperture size={15} /> Field Scan</button></div></div>
+              <p>Explore freely. Optional quests are organizer-verified; Field Scan ideas come only from a frame you choose.</p>
             </div>
 
             {storageMode === "local-demo" && <div className="demo-banner"><span>LOCAL DEMO</span> Quest pins and claims stay on this device. Nothing here is a real campus landmark.</div>}
@@ -607,13 +733,9 @@ export default function Home() {
               </form>
             )}
 
-            {locations.length > 0 ? (
-              <div className="map-frame"><CampusMap locations={locations} onClaim={(location) => void claimQuest(location)} claimedIds={claimedIds} /></div>
-            ) : (
-              <div className="map-empty"><div className="map-empty-art"><span /><span /><MapIcon size={27} /></div><span className="eyebrow">NO VERIFIED PINS YET</span><h2>A blank map is an honest map.</h2><p>Add a verified place with a real clue and coordinates to give your crew somewhere to start.</p><button className="text-button" onClick={() => setShowQuestForm(true)}>Add the first verified quest <ChevronRight size={15} /></button></div>
-            )}
+            <div className="map-frame"><CampusMap locations={locations} onClaim={(location) => void claimQuest(location)} claimedIds={claimedIds} gpsPosition={gpsPosition} /><span className="map-location-label">{gpsStatus === "located" ? "YOUR LOCATION · THIS SESSION ONLY" : gpsStatus === "unavailable" ? "LOCATION UNAVAILABLE · DEMO AREA" : "DEMO AREA · LOCATION NOT SHARED"}</span></div>
 
-            {locations.length > 0 && <div className="quest-list"><div className="list-title"><span className="eyebrow">DISCOVERIES TO SEEK</span><span>{locations.length} PIN{locations.length === 1 ? "" : "S"}</span></div>{locations.map((location) => <button className="quest-row" key={location.id} onClick={() => void claimQuest(location)}><span className="quest-row-marker"><LocateFixed size={17} /></span><span className="quest-row-text"><strong>{location.name}</strong><small>{location.clue}</small></span><span className="quest-row-card">{claimedIds.includes(location.id) ? <Check size={17} /> : <ChevronRight size={17} />}</span></button>)}</div>}
+            <div className="quest-list"><div className="list-title"><span className="eyebrow">VERIFIED ORGANIZER QUESTS</span><span>{locations.length} PIN{locations.length === 1 ? "" : "S"}</span></div>{locations.length ? locations.map((location) => <button className="quest-row" key={location.id} onClick={() => void claimQuest(location)}><span className="quest-row-marker"><LocateFixed size={17} /></span><span className="quest-row-text"><strong>{location.name}</strong><small>{location.clue}</small></span><span className="quest-row-card">{claimedIds.includes(location.id) ? <Check size={17} /> : <ChevronRight size={17} />}</span></button>) : <p className="quiet-empty">No verified quests yet. Free photo discoveries work anywhere.</p>}</div>
           </section>
         )}
 
@@ -652,12 +774,23 @@ export default function Home() {
 
             <div className="community-section wishlist-section">
               <div className="subsection-heading"><div><span className="eyebrow">ON YOUR RADAR</span><h2>Cards you&apos;re after.</h2></div><span className="subsection-number">01</span></div>
-              <p className="section-copy">Post a card you&apos;re looking for. In shared mode, matches are other guest explorers who posted the same card.</p>
+              <p className="section-copy">Post a card you&apos;re looking for. Only explorers who opt in with a chosen display name appear in matches.</p>
               <form className="wanted-form" onSubmit={(event) => void addWantedCard(event)}><input aria-label="Card you are looking for" value={wantedInput} onChange={(event) => setWantedInput(event.target.value)} placeholder="Type a card name..." maxLength={80} /><button type="submit" disabled={!wantedInput.trim()} aria-label="Add to looking-for list"><Plus size={18} /></button></form>
               {lookingFor.length > 0 ? <div className="wanted-list">{lookingFor.map((name) => <div className="wanted-item" key={name}><span><Heart size={15} />{name}</span><button className="text-button" onClick={() => void removeWantedCard(name)}>Remove</button></div>)}</div> : <p className="quiet-empty">No cards on your list yet.</p>}
-              {storageMode === "mongodb" && wishlistMatches.length > 0 && <div className="match-list"><span className="eyebrow">SAME CARD, SAME WISHLIST</span>{wishlistMatches.map((match, index) => <div key={`${match.explorer}-${match.name}-${index}`}><Users size={15} /><span>{match.explorer}</span><strong>{match.name}</strong></div>)}</div>}
-              {storageMode === "mongodb" && lookingFor.length > 0 && wishlistMatches.length === 0 && <p className="quiet-empty match-empty">No other explorers have posted those cards yet.</p>}
+              {storageMode === "mongodb" && wishlistMatches.length > 0 && <div className="match-list"><span className="eyebrow">OPTED-IN EXPLORERS</span>{wishlistMatches.map((match, index) => <div key={`${match.displayName}-${match.name}-${index}`}><Users size={15} /><span>{match.displayName}</span><strong>{match.name}</strong></div>)}</div>}
+              {storageMode === "mongodb" && lookingFor.length > 0 && wishlistMatches.length === 0 && <p className="quiet-empty match-empty">No opted-in explorer has posted those cards yet.</p>}
               {storageMode === "local-demo" && lookingFor.length > 0 && <p className="quiet-empty match-empty">This device is in local demo mode, so no other explorers can see this list.</p>}
+            </div>
+
+            <div className="community-section visibility-section">
+              <div className="subsection-heading"><div><span className="eyebrow">YOUR PRIVACY</span><h2>Wishlist visibility.</h2></div><span className="subsection-number">02</span></div>
+              <p className="section-copy">Your display name is shown only when someone views a card you want. Guest ID, contact details, and location stay private.</p>
+              <form className="profile-form" onSubmit={(event) => void saveWishlistProfile(event)}>
+                <label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={40} placeholder="Name other explorers can see" /></label>
+                <label className="check-line"><input type="checkbox" checked={visibilityOptIn} onChange={(event) => setVisibilityOptIn(event.target.checked)} /> Let other explorers see my name when our card lists match.</label>
+                <button className="secondary-button" type="submit"><Check size={15} /> Save privacy choice</button>
+              </form>
+              {storageMode === "local-demo" && <p className="quiet-empty">Local demo preferences stay on this device and are not shared.</p>}
             </div>
 
             <div className="community-section events-section">
@@ -691,10 +824,10 @@ export default function Home() {
 
       {toast && <div role="status" className={`toast ${toast.tone === "error" ? "toast--error" : "toast--success"}`}><span>{toast.tone === "error" ? "OOPS" : "NICE FIND"}</span><p>{toast.message}</p><button className="toast-close" onClick={() => setToast(null)} aria-label="Dismiss"><X size={16} /></button></div>}
 
-      {reveal && <div className="reveal-backdrop" role="presentation" onClick={() => setReveal(null)}><section className="reveal-dialog" role="dialog" aria-modal="true" aria-labelledby="reveal-title" onClick={(event) => event.stopPropagation()}>
+      {reveal && <div className="reveal-backdrop" role="presentation" onClick={() => setReveal(null)}><section className={`reveal-dialog reveal-dialog--${revealStage}`} role="dialog" aria-modal="true" aria-labelledby="reveal-title" onClick={(event) => event.stopPropagation()}>
         <button className="reveal-close" onClick={() => setReveal(null)} aria-label="Close card"><X size={19} /></button>
-        <div className={`reveal-art ${artClass(reveal.card.category)}`}><span className="art-orbit art-orbit--one" /><span className="art-orbit art-orbit--two" /><span className="art-sun" /><span className="art-ribbon">{reveal.card.category}</span><span className="reveal-confetti">✳</span><span className="reveal-monogram">{reveal.card.name.charAt(0).toUpperCase()}</span><span className="art-index">OUTSIDE FIELD CARD</span></div>
-        <div className="reveal-body"><div className="reveal-kicker"><span className="eyebrow">{reveal.card.source === "verified-quest" ? "VERIFIED QUEST FIND" : reveal.card.source === "local-demo" ? "LOCAL DEMO · ORGANIZER ENTERED" : "AI-GENERATED IDENTIFICATION"}</span><span className={`rarity rarity--${reveal.card.rarity}`}>{reveal.card.rarity}</span></div><h2 id="reveal-title">{reveal.card.name}</h2><p className="reveal-fact">{reveal.card.shortFact}</p>{reveal.card.uncertaintyNote && <p className="uncertainty-note">Identification uncertain: {reveal.card.uncertaintyNote}</p>}<div className="reward-line"><span><Zap size={15} /> {reveal.card.xp} XP</span><span>{reveal.card.category}</span></div>{reveal.card.source === "local-demo" && <p className="demo-card-note">Device-only test card. No verified campus data or XP is claimed.</p>}<button className="primary-button reveal-save" onClick={() => void saveCard()} disabled={storageMode === "unavailable" || storageMode === "loading"}><Check size={17} /> {reveal.alreadySaved ? "View in deck" : reveal.card.source === "local-demo" || storageMode === "local-demo" ? "Save demo card" : "Add to deck"}</button><button className="reveal-dismiss" onClick={() => setReveal(null)}>Not now</button></div>
+        <div className={`reveal-art ${artClass(reveal.card.category)}`}><span className="art-orbit art-orbit--one" /><span className="art-orbit art-orbit--two" /><span className="art-sun" /><span className="art-ribbon">{reveal.card.category}</span><span className="reveal-confetti">✳</span><span className="reveal-monogram">{reveal.card.name.charAt(0).toUpperCase()}</span><span className="art-index">FIELD ART · NOT THE PHOTO</span><span className="reveal-scanline" /></div>
+        <div className="reveal-body"><div className="reveal-kicker"><span className="eyebrow">{reveal.card.source === "verified-quest" ? "VERIFIED QUEST FIND" : reveal.card.source === "local-demo" ? "LOCAL DEMO · ORGANIZER ENTERED" : reveal.alreadySaved ? "SAVED DISCOVERY" : "AI-GENERATED IDENTIFICATION"}</span><span className={`rarity rarity--${reveal.card.rarity}`}>{reveal.card.rarity}</span></div><h2 id="reveal-title">{reveal.card.name}</h2><p className="reveal-fact">{reveal.card.shortFact}</p>{categoryHumor(reveal.card.category) && <p className="card-humor">{categoryHumor(reveal.card.category)}</p>}{reveal.card.uncertaintyNote && <><p className="uncertainty-note">Identification uncertain: {reveal.card.uncertaintyNote}</p><button className="text-button retry-discovery" onClick={() => { setReveal(null); setActiveTab("explore"); }}>Try another photo <RefreshCw size={14} /></button></>}{reveal.alreadySaved && <section className="who-wants" aria-live="polite"><span className="eyebrow">WHO WANTS THIS?</span>{storageMode === "local-demo" ? <p>Local demo mode has no shared wishlist matches. Another account can add “{reveal.card.name}” in Community after connecting MongoDB.</p> : wantedByLoading ? <p>Checking opted-in wishlists…</p> : wantedBy.length ? <div className="who-wants-list">{wantedBy.map((name, index) => <span key={`${name}-${index}`}><Users size={14} />{name}</span>)}</div> : <p>No opted-in explorers have this on their wishlist yet. Another account can add “{reveal.card.name}” in Community.</p>}</section>}<div className={`reward-line ${revealStage === "reward" || revealStage === "ready" ? "reward-line--visible" : "reward-line--hidden"}`}><span><Zap size={15} /> {reveal.card.xp} XP</span><span>{reveal.card.category}</span></div>{reveal.card.source === "local-demo" && <p className="demo-card-note">Device-only test card. No verified campus data or XP is claimed.</p>}{revealStage !== "ready" && <button className="reveal-skip" onClick={skipRevealAnimation}>Skip animation</button>}<button className="primary-button reveal-save" onClick={() => void saveCard()} disabled={storageMode === "unavailable" || storageMode === "loading" || (revealStage !== "ready" && !reveal.alreadySaved)}><Check size={17} /> {reveal.alreadySaved ? "View in deck" : reveal.card.source === "local-demo" || storageMode === "local-demo" ? "Save demo card" : "Add to deck"}</button><button className="reveal-dismiss" onClick={() => setReveal(null)}>Not now</button></div>
       </section></div>}
     </main>
   );
@@ -712,4 +845,14 @@ function sourceLabel(source: DiscoveryCard["source"]) {
   if (source === "verified-quest") return "ORGANIZER VERIFIED";
   if (source === "local-demo") return "DEVICE-ONLY DEMO";
   return "AI-GENERATED";
+}
+
+function categoryHumor(category: string) {
+  const value = category.toLowerCase();
+  if (/person|people|human/.test(value)) return "";
+  if (/plant|tree|nature/.test(value)) return "A quiet little overachiever.";
+  if (/building|architecture|structure/.test(value)) return "Holding it all together. Literally.";
+  if (/animal|wildlife|bird/.test(value)) return "The original neighborhood regular.";
+  if (/art|sign/.test(value)) return "Promoted from background scenery.";
+  return "You noticed it. The rest was just scenery.";
 }

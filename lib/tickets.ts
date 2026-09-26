@@ -1,19 +1,23 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { z } from "zod";
 import type { DiscoveryCard } from "@/lib/types";
 
 type DiscoveryTicket = { guestId: string; card: DiscoveryCard; issuedAt: number };
 
-declare global {
-  var outsideTicketSecret: Buffer | undefined;
-}
-
 function secret() {
-  global.outsideTicketSecret ??= Buffer.from(process.env.APP_SIGNING_SECRET || randomBytes(32).toString("hex"));
-  return global.outsideTicketSecret;
+  const configured = process.env.APP_SIGNING_SECRET;
+  if (!configured || configured.length < 32) {
+    throw new Error("SIGNING_SECRET_NOT_CONFIGURED");
+  }
+  return configured;
 }
 
 function signature(value: string) {
   return createHmac("sha256", secret()).update(value).digest("base64url");
+}
+
+export function ticketSigningConfigured() {
+  return Boolean(process.env.APP_SIGNING_SECRET && process.env.APP_SIGNING_SECRET.length >= 32);
 }
 
 export function issueTicket(ticket: DiscoveryTicket) {
@@ -29,8 +33,23 @@ export function readTicket(token: string, guestId: string) {
   if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
 
   try {
-    const ticket = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as DiscoveryTicket;
-    if (ticket.guestId !== guestId || Date.now() - ticket.issuedAt > 5 * 60 * 1000) return null;
+    const ticket = z.object({
+      guestId: z.string().uuid(),
+      card: z.object({
+        id: z.string().uuid(),
+        name: z.string().min(2).max(80),
+        category: z.string().min(2).max(50),
+        shortFact: z.string().min(8).max(240),
+        rarity: z.literal("common"),
+        xp: z.union([z.literal(5), z.literal(10)]),
+        source: z.literal("ai"),
+        uncertaintyNote: z.string().max(180).optional(),
+        discoveredAt: z.string().datetime(),
+      }),
+      issuedAt: z.number().int().positive(),
+    }).parse(JSON.parse(Buffer.from(payload, "base64url").toString("utf8"))) as DiscoveryTicket;
+    const age = Date.now() - ticket.issuedAt;
+    if (ticket.guestId !== guestId || age < 0 || age > 15 * 60 * 1000) return null;
     return ticket;
   } catch {
     return null;

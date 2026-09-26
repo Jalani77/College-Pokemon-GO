@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { issueTicket } from "@/lib/tickets";
+import { issueTicket, ticketSigningConfigured } from "@/lib/tickets";
 import { recognizeImage } from "@/lib/vision";
 
 const requestSchema = z.object({
@@ -34,10 +34,13 @@ export async function POST(request: Request) {
         ? "webp"
         : "unknown";
   if (actualType !== imageMatch[1]) return NextResponse.json({ error: "Photo content does not match its image type." }, { status: 400 });
+  if (!ticketSigningConfigured()) {
+    return NextResponse.json({ error: "Recognition saving is not configured. Set APP_SIGNING_SECRET to a stable value of at least 32 characters in .env.local, then restart the server." }, { status: 503 });
+  }
 
   try {
     const recognition = await recognizeImage(body.imageData);
-    const uncertain = recognition.confidence < 0.55;
+    const uncertain = recognition.uncertain;
     const card = {
       id: randomUUID(),
       name: uncertain ? "Unidentified object" : recognition.objectName,
@@ -54,7 +57,10 @@ export async function POST(request: Request) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "RECOGNITION_FAILED";
     if (message === "AI_NOT_CONFIGURED") {
-      return NextResponse.json({ error: "AI not configured. Add VISION_API_KEY to .env.local to identify photos." }, { status: 503 });
+      return NextResponse.json({ error: "AI not configured. Add XAI_API_KEY (or VISION_API_KEY) to .env.local to identify photos." }, { status: 503 });
+    }
+    if (message === "SIGNING_SECRET_NOT_CONFIGURED") {
+      return NextResponse.json({ error: "Set APP_SIGNING_SECRET in .env.local, then restart the server." }, { status: 503 });
     }
     console.error("Vision recognition failed:", message);
     return NextResponse.json({ error: "Recognition did not complete. Check the photo and try again." }, { status: 502 });

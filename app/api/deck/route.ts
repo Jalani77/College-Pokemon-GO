@@ -28,7 +28,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "A valid recognition ticket is required." }, { status: 400 });
   }
   const ticket = readTicket(body.ticket, body.guestId);
-  if (!ticket) return NextResponse.json({ error: "This recognition expired. Discover the object again." }, { status: 403 });
+  if (!ticket) {
+    if (!process.env.APP_SIGNING_SECRET || process.env.APP_SIGNING_SECRET.length < 32) {
+      return NextResponse.json({ error: "Recognition signing is not configured. Set APP_SIGNING_SECRET to a stable value of at least 32 characters, then restart the server and rediscover the object." }, { status: 503 });
+    }
+    return NextResponse.json({ error: "This recognition proof is invalid or expired. Discover the object again." }, { status: 403 });
+  }
 
   try {
     const database = await getDatabase();
@@ -49,8 +54,11 @@ export async function POST(request: Request) {
     );
     return NextResponse.json({ card: ticket.card, storage: "mongodb", alreadySaved: result.upsertedCount === 0 });
   } catch (error) {
-    if (mongoUnavailable(error) || (error instanceof Error && error.message === "DATABASE_NOT_CONFIGURED")) {
-      return NextResponse.json({ error: "MongoDB is unavailable. This card was not saved; local demo mode is not server persistence." }, { status: 503 });
+    if (error instanceof Error && error.message === "DATABASE_NOT_CONFIGURED") {
+      return NextResponse.json({ error: "MongoDB is not configured. This card was not saved; add MONGODB_URI to .env.local and restart." }, { status: 503 });
+    }
+    if (mongoUnavailable(error)) {
+      return NextResponse.json({ error: "MongoDB could not be reached. This card was not saved; verify the Atlas URI, database password, and network access list." }, { status: 503 });
     }
     console.error("Card save failed:", error);
     return NextResponse.json({ error: "Could not save card." }, { status: 500 });

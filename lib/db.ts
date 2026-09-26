@@ -33,5 +33,8 @@ export async function getDatabase() {
 }
 
 export function mongoUnavailable(error: unknown) {
-  return error instanceof Error && error.name === "MongoServerSelectionError";
+  if (!(error instanceof Error)) return false;
+  if (["MongoServerSelectionError", "MongoNetworkError"].includes(error.name)) return true;
+  const code = "code" in error && typeof error.code === "string" ? error.code : "";
+  return ["EBADNAME", "ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ETIMEDOUT"].includes(code);
 }

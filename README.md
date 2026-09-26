@@ -14,7 +14,7 @@ npm run dev
 
 Open **http://localhost:3000**. In a Codespace or remote VS Code session, forward port `3000` in the **Ports** panel and open its forwarded URL. Camera access requires `localhost` or HTTPS and browser permission. Desktop discovery works with a photo upload instead.
 
-`npm run lint`, `npm run typecheck`, and `npm run build` run the project quality gates. `npm run test:e2e` runs Chromium smoke tests for camera denial, the no-key upload state, and local quest-to-deck persistence. On Linux, first install Playwright's browser/runtime dependencies with `npx playwright install --with-deps chromium`. `npm run start` serves the production build.
+`npm run lint`, `npm run typecheck`, and `npm run build` run the project quality gates. `npm run test:e2e` runs mobile Chromium flows for free scanning, duplicate-save behavior, provider/database failures, zero-pin map/GPS fallback, Field Scan, wishlist visibility, and reduced motion. On Linux, first install Playwright's browser/runtime dependencies with `npx playwright install --with-deps chromium`. `npm run start` serves the production build.
 
 ## Configure live services
 
@@ -24,22 +24,23 @@ To enable shared MongoDB persistence:
 
 1. Create a free MongoDB Atlas project and database at [MongoDB Atlas](https://www.mongodb.com/atlas). In **Database > Connect > Drivers**, copy its Node.js connection string; replace the password placeholder and URL-encode special characters. Add the app's host IP in **Network Access**. Set this as `MONGODB_URI` and set `MONGODB_DB` to the database name.
 2. Set `ADMIN_TOKEN` to a strong random secret. Organizers enter it in the in-app quest/event form to publish verified locations and upcoming group quests. The token is held by the server and is not stored in the database or browser storage.
-3. Set `APP_SIGNING_SECRET` to a stable random secret so short-lived AI recognition tickets can be verified consistently. Generate one with `openssl rand -hex 32`.
+3. Set `APP_SIGNING_SECRET` to a stable random secret of at least 32 characters so short-lived AI recognition tickets can be verified consistently across server workers/restarts. Generate one with `openssl rand -hex 32`. Recognition returns an actionable configuration error if this is missing; tickets signed with a different secret cannot be saved.
 4. Restart the server. The app creates the `users`, `cards`, `ownedCards`, `locations`, and `events` collections and useful indexes as needed.
 
-To enable photo recognition, create an API key at [OpenAI API keys](https://platform.openai.com/api-keys) and set `VISION_API_KEY`. `VISION_MODEL` defaults to `gpt-4o-mini`. The key is only read by the server integration in `lib/vision.ts`; keep billing limits on the provider account. Captured photos are compressed to a JPEG still, sent once for recognition, and are not stored in MongoDB or retained by this app.
+To enable photo recognition, create an API key in the [xAI console](https://console.x.ai/) and set `XAI_API_KEY`. `VISION_API_KEY` is accepted as a legacy fallback. `VISION_MODEL` defaults to `grok-2-vision-1212`. The key is only read by the server integration in `lib/vision.ts`; keep billing limits on the provider account. Captured photos are compressed to a JPEG still, sent once for recognition, and are not stored in MongoDB or retained by this app.
 
 Set values only in the ignored `.env.local` file. `.env.example` documents the variable names without credentials. The app recognizes guest users with a browser-generated UUID; this is a demo convenience, **not authentication**. Before production use, add real sign-in/session verification, authorization tied to a verified organizer account, endpoint rate limits, abuse reporting, and a privacy/retention policy. The demo organizer token alone is not production event authorization.
 
 ## Data and reward rules
 
-- AI output is schema-validated and labeled AI-generated. Low-confidence identities appear as “Unidentified object”; the provider is prompted not to guess species, history, or campus facts.
+- xAI output is schema-validated and labeled AI-generated. Provider-declared uncertainty is shown with a retry option; the provider is prompted not to identify people, infer personal traits, or guess species, history, or campus facts.
 - The server issues common AI cards and fixed XP using an expiring, guest-bound signed ticket. The browser cannot submit rarity or XP.
 - Rare verified-location quest claims use organizer-entered facts and get a single 25 XP reward; duplicate quest claims are blocked by a unique database index. Local demo claims award no XP.
 - Verified pins require real coordinates, a verified name/fact, MongoDB, and the admin token. No GSU locations or coordinates are bundled. The map uses OpenStreetMap tiles.
 - Group quests only appear after an organizer supplies a future date, meeting point, organizer, and reward. RSVPs are idempotent. Events do not confer a reward card just for RSVP.
-- Community “looking for” matches are only shown across users when shared MongoDB is enabled. Local demo wishlists stay on the device.
+- Community matches and “Who wants this?” are only shown for users who explicitly opt in with a display name. Guest IDs, contact details, and location are not returned. Local demo wishlists stay on the device.
+- Field Scan analyzes only a still frame captured when requested. Its broad suggestions are AI ideas, not verified quests or map pins.
 
 ## Current demo boundary
 
-The full live camera and desktop upload UI, still-image compression, recognition endpoint, card reveal, verified-quest map, deck, wishlists, and group-quest RSVP are implemented. AI recognition requires `VISION_API_KEY`; shared deck/community/map/event persistence requires a reachable Atlas database. With neither, the reproducible test path is: open **Map**, add an explicitly local demo quest with coordinates and organizer-entered text, claim it, choose **View in deck**, then refresh. That local path tests UI/deck persistence only; it does not verify a campus fact, AI, XP, or server persistence.
+The live camera and desktop upload UI, still-image compression, xAI recognition, signed-card save endpoint, card reveal, OpenStreetMap, GPS opt-in, Field Scan, deck, wishlist opt-in, and group-quest RSVP are implemented. AI recognition requires `XAI_API_KEY` or the legacy `VISION_API_KEY`; shared deck/community/map/event persistence requires a reachable Atlas database. Playwright uses mocked service responses for client-flow tests; connect a valid Atlas URI to verify actual persistence and multiple-account matching end to end.
