@@ -17,6 +17,7 @@ type MockOptions = {
   aiConfigured?: boolean;
   recognitionFailureCount?: number;
   saveFailure?: boolean;
+  uncertain?: boolean;
   wantedBy?: string[];
   suggestions?: { name: string; clue: string; category: string }[];
 };
@@ -82,8 +83,9 @@ async function mockServices(page: Page, options: MockOptions = {}) {
     if (recognitionCalls <= (options.recognitionFailureCount || 0)) return route.fulfill({ status: 502, json: { error: "Recognition did not complete. Check the photo and try again." } });
     const body = route.request().postDataJSON() as { guestId: string; imageData: string };
     if (body.guestId !== guestId || !body.imageData.startsWith("data:image/jpeg;base64,")) return route.fulfill({ status: 400, json: { error: "Invalid still image request." } });
-    tickets.set(ticket, appleCard);
-    return route.fulfill({ json: { card: appleCard, ticket, recognition: { uncertain: false, missionMatch: false } } });
+    const card = options.uncertain ? { ...appleCard, id: "95cfc08e-92b8-483b-b3e1-d1437338721f", name: "Unidentified object", shortFact: "A small shape is visible, but the image is not clear enough to name it.", uncertaintyNote: "The still frame does not show enough detail." , xp: 5 } : appleCard;
+    tickets.set(ticket, card);
+    return route.fulfill({ json: { card, ticket, recognition: { uncertain: Boolean(options.uncertain), missionMatch: false } } });
   });
 
   return { saved, ticket };
@@ -128,6 +130,17 @@ test("failed xAI recognition is truthful and can be retried", async ({ page }) =
   await expect(page.getByText(/Recognition did not complete/)).toBeVisible();
   await uploadPhoto(page);
   await expect(page.getByRole("heading", { name: "Red apple" })).toBeVisible();
+});
+
+test("uncertain identification is not overclaimed and offers a retake", async ({ page }) => {
+  await denyCamera(page);
+  await mockServices(page, { uncertain: true });
+  await page.goto("/");
+  await uploadPhoto(page);
+  await expect(page.getByRole("heading", { name: "Unidentified object" })).toBeVisible();
+  await expect(page.getByText(/Identification uncertain/)).toBeVisible();
+  await page.getByRole("button", { name: /Try another photo/ }).click();
+  await expect(page.getByText(/Camera permission was denied/)).toBeVisible();
 });
 
 test("MongoDB save failure never displays a saved state", async ({ page }) => {

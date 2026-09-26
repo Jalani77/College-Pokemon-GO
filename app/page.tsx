@@ -97,6 +97,7 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<AppTab>("explore");
   const [guestId, setGuestId] = useState("");
   const [storageMode, setStorageMode] = useState<StorageMode>("loading");
+  const [serviceError, setServiceError] = useState("");
   const [visionConfigured, setVisionConfigured] = useState<boolean | null>(null);
   const [cards, setCards] = useState<OwnedCard[]>([]);
   const [locations, setLocations] = useState<LocationQuest[]>([]);
@@ -167,12 +168,14 @@ export default function Home() {
           fetch("/api/events"),
           fetch(`/api/wishlist?guestId=${encodeURIComponent(guestId)}`),
         ]);
-        if (!deckResponse.ok || !locationResponse.ok || !eventResponse.ok || !wishlistResponse.ok) {
-          throw new Error("MongoDB is configured but unavailable. Saved content was not replaced with demo data.");
-        }
         const [deck, locationData, eventData, wishlist] = await Promise.all([
           deckResponse.json(), locationResponse.json(), eventResponse.json(), wishlistResponse.json(),
         ]);
+        const failedIndex = [deckResponse, locationResponse, eventResponse, wishlistResponse].findIndex((response) => !response.ok);
+        if (failedIndex >= 0) {
+          const failedData = [deck, locationData, eventData, wishlist][failedIndex];
+          throw new Error(failedData.error || "MongoDB is unavailable. Saved content was not replaced with demo data.");
+        }
         if (cancelled) return;
         setCards(deck.cards || []);
         setLocations(locationData.locations || []);
@@ -185,7 +188,9 @@ export default function Home() {
       } catch (error) {
         if (cancelled) return;
         setStorageMode("unavailable");
-        setToast({ message: error instanceof Error ? error.message : "Could not connect to the app services.", tone: "error" });
+        const message = error instanceof Error ? error.message : "Could not connect to the app services.";
+        setServiceError(message);
+        setToast({ message, tone: "error" });
       }
     }
 
@@ -747,7 +752,7 @@ export default function Home() {
               <p>Every card starts with looking up.</p>
             </div>
             {storageMode === "local-demo" && <div className="demo-banner"><span>LOCAL DEMO</span> These cards are stored in this browser only. Clear site data and they are gone.</div>}
-            {storageMode === "unavailable" && <div className="error-banner">Your saved deck could not be loaded. Check MongoDB and refresh to try again.</div>}
+            {storageMode === "unavailable" && <div className="error-banner"><strong>Your saved deck could not be loaded.</strong> {serviceError || "Check MongoDB and refresh to try again."}</div>}
             <div className="level-progress"><div className="level-label"><span><Zap size={14} /> LEVEL {level} WANDERER</span><strong>{xp} <small>XP</small></strong></div><div className="progress-track"><span style={{ width: `${nextLevelProgress}%` }} /></div><span className="progress-caption">{100 - nextLevelProgress} XP TO LEVEL {level + 1}</span></div>
             {cards.length === 0 ? (
               <div className="deck-empty"><div className="empty-specimen"><span className="specimen-orbit specimen-orbit--one" /><span className="specimen-orbit specimen-orbit--two" /><Sparkles size={24} /></div><span className="eyebrow">NOTHING IN HERE. YET.</span><h2>Your first find is waiting.</h2><p>Take a photo of something you notice. Your pocket field guide starts with the ordinary.</p><button className="primary-button" onClick={() => setActiveTab("explore")}><Aperture size={16} /> Find your first card</button></div>

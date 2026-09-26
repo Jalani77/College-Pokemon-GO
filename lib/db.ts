@@ -35,6 +35,29 @@ export async function getDatabase() {
 export function mongoUnavailable(error: unknown) {
   if (!(error instanceof Error)) return false;
   if (["MongoServerSelectionError", "MongoNetworkError"].includes(error.name)) return true;
-  const code = "code" in error && typeof error.code === "string" ? error.code : "";
+  const code = mongoFailureCode(error);
   return ["EBADNAME", "ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ETIMEDOUT"].includes(code);
+}
+
+export function mongoFailureCode(error: unknown) {
+  const pending: unknown[] = [error];
+  const visited = new Set<object>();
+  while (pending.length) {
+    const current = pending.shift();
+    if (!current || typeof current !== "object" || visited.has(current)) continue;
+    visited.add(current);
+    if ("code" in current && (typeof current.code === "string" || typeof current.code === "number")) {
+      return String(current.code);
+    }
+    if ("cause" in current) pending.push(current.cause);
+    if ("reason" in current && current.reason && typeof current.reason === "object") {
+      if ("cause" in current.reason) pending.push(current.reason.cause);
+      if ("servers" in current.reason && current.reason.servers instanceof Map) {
+        for (const server of current.reason.servers.values()) {
+          if (server && typeof server === "object" && "error" in server) pending.push(server.error);
+        }
+      }
+    }
+  }
+  return "";
 }

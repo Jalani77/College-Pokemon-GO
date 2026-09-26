@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import type { Filter } from "mongodb";
 import { z } from "zod";
 import { getDatabase, mongoUnavailable } from "@/lib/db";
 
@@ -28,7 +29,7 @@ export async function GET(request: Request) {
     const users = database.collection<WishlistUser>("users");
     const user = await users.findOne({ guestId: validGuestId });
     const names = Array.isArray(user?.lookingFor) ? user.lookingFor : [];
-    const publicProfileFilter = { visibilityOptIn: true, displayName: { $type: "string", $ne: "" } };
+    const publicProfileFilter: Filter<WishlistUser> = { visibilityOptIn: true, displayName: { $type: "string", $ne: "" } };
     const matches = names.length ? await users.find({ guestId: { $ne: validGuestId }, ...publicProfileFilter, lookingFor: { $in: names } }, { projection: { displayName: 1, lookingFor: 1 } }).toArray() : [];
     const wantedBy = cardName ? await users.find({
       guestId: { $ne: validGuestId },

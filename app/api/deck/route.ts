@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getDatabase, mongoUnavailable } from "@/lib/db";
+import { getDatabase, mongoFailureCode, mongoUnavailable } from "@/lib/db";
 import { readTicket } from "@/lib/tickets";
 
 const guestSchema = z.string().uuid();
@@ -13,7 +13,24 @@ export async function GET(request: Request) {
     const cards = await database.collection("ownedCards").find({ guestId }).sort({ discoveredAt: -1 }).toArray();
     return NextResponse.json({ cards, storage: "mongodb" });
   } catch (error) {
-    if (mongoUnavailable(error)) return NextResponse.json({ cards: [], storage: "unavailable", error: "MongoDB is configured but could not be reached." }, { status: 503 });
+    if (error instanceof Error && /bad auth|authentication failed/i.test(error.message)) {
+      return NextResponse.json({ cards: [], storage: "unavailable", error: "MongoDB rejected the database user's credentials. Verify the Atlas Database Access username and password, then URL-encode special characters in MONGODB_URI and restart." }, { status: 503 });
+    }
+    if (mongoUnavailable(error)) {
+      const code = mongoFailureCode(error);
+      const message = code === "EBADNAME"
+        ? "MongoDB Atlas URI has an invalid hostname. Replace the <db_password> placeholder with your database user's password, URL-encode special characters, and restart the server."
+        : code === "ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR"
+          ? "MongoDB Atlas rejected the TLS handshake before authentication. Check Atlas Network Access for this Codespace's outbound IP and verify the cluster's current Node.js SRV URI. Keep TLS enabled."
+        : "MongoDB is configured but could not be reached. Verify the Atlas URI and network access list.";
+      return NextResponse.json({ cards: [], storage: "unavailable", error: message }, { status: 503 });
+    }
+    if (error instanceof Error && error.name === "MongoServerError" && mongoFailureCode(error) === "18") {
+      return NextResponse.json({ cards: [], storage: "unavailable", error: "MongoDB rejected authentication. Verify the Atlas database username, password, and authentication database." }, { status: 503 });
+    }
+    if (error instanceof Error && error.name === "MongoParseError") {
+      return NextResponse.json({ cards: [], storage: "unavailable", error: "MongoDB URI could not be parsed. Check the Atlas connection string format." }, { status: 503 });
+    }
     if (error instanceof Error && error.message === "DATABASE_NOT_CONFIGURED") return NextResponse.json({ cards: [], storage: "local-demo" });
     console.error("Deck read failed:", error);
     return NextResponse.json({ error: "Could not load deck." }, { status: 500 });
@@ -54,6 +71,9 @@ export async function POST(request: Request) {
     );
     return NextResponse.json({ card: ticket.card, storage: "mongodb", alreadySaved: result.upsertedCount === 0 });
   } catch (error) {
+    if (error instanceof Error && (/bad auth|authentication failed/i.test(error.message) || ["18", "8000"].includes(mongoFailureCode(error)))) {
+      return NextResponse.json({ error: "MongoDB rejected the database user's credentials. This card was not saved; verify the Atlas Database Access username and password, URL-encode special characters in MONGODB_URI, and retry." }, { status: 503 });
+    }
     if (error instanceof Error && error.message === "DATABASE_NOT_CONFIGURED") {
       return NextResponse.json({ error: "MongoDB is not configured. This card was not saved; add MONGODB_URI to .env.local and restart." }, { status: 503 });
     }
